@@ -1,0 +1,1741 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+		<meta http-equiv="Pragma" content="no-cache">
+		<meta http-equiv="Expires" content="0">
+		<title>DHIS2 Data Upload System</title>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+		<style>
+			:root 
+			{
+				--c-primary: #1a5632;
+				--c-primary-light: #e8f0eb;
+				--c-accent: #d4a017;
+				--c-danger: #c0392b;
+				--c-danger-light: #fdecea;
+				--c-success: #27ae60;
+				--c-success-light: #eafaf1;
+				--c-warning: #e67e22;
+				--c-warning-light: #fef5e7;
+				--c-info: #2c5282;
+				--c-info-light: #eaf0f9;
+				--c-text: #2c3e50;
+				--c-muted: #7f8c8d;
+				--c-border: #dce1e4;
+				--c-bg: #f4f6f7;
+				--c-white: #ffffff;
+				--radius: 6px;
+			}
+			* { box-sizing: border-box; margin: 0; padding: 0; }
+			body 
+			{
+				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+				background: var(--c-bg); color: var(--c-text); line-height: 1.5;
+			}
+
+			/* Layout */
+			.page { max-width: 1100px; margin: 0 auto; padding: 24px 20px; }
+			.card 
+			{
+				background: var(--c-white); border: 1px solid var(--c-border);
+				border-radius: var(--radius); padding: 20px; margin-bottom: 20px;
+				box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+			}
+			.card h3 { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: var(--c-primary); }
+
+			/* Header bar */
+			.header-bar 
+			{
+				background: var(--c-primary); color: #fff; padding: 14px 24px;
+				display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+			}
+			.header-bar h1 { font-size: 18px; font-weight: 700; }
+			.header-bar .school-label 
+			{
+				background: rgba(255,255,255,0.15); padding: 4px 14px;
+				border-radius: 20px; font-size: 13px; font-weight: 500;
+			}
+			.header-bar .btn-logout 
+			{
+				margin-left: auto; background: rgba(255,255,255,0.2);
+				border: none; color: #fff; padding: 6px 16px; border-radius: var(--radius);
+				font-size: 13px; cursor: pointer; font-weight: 500;
+			}
+			.header-bar .btn-logout:hover { background: rgba(255,255,255,0.3); }
+
+			/* Forms */
+			.form-row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+			.form-group { flex: 1; min-width: 200px; }
+			.form-group label 
+			{
+				display: block; font-size: 11px; font-weight: 600; color: var(--c-muted);
+				margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px;
+			}
+			.form-group input, .form-group select 
+			{
+				width: 100%; padding: 9px 11px; border: 1px solid var(--c-border);
+				border-radius: var(--radius); font-size: 14px; color: var(--c-text);
+			}
+			.form-group input:focus, .form-group select:focus {
+				outline: none; border-color: var(--c-primary);
+			}
+
+			/* Buttons */
+			.btn 
+			{
+				padding: 9px 20px; border: none; border-radius: var(--radius);
+				font-size: 13px; font-weight: 600; cursor: pointer;
+				display: inline-flex; align-items: center; gap: 6px;
+				transition: opacity 0.15s;
+			}
+			.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+			.btn-primary { background: var(--c-primary); color: #fff; }
+			.btn-accent  { background: var(--c-accent); color: #fff; }
+			.btn-danger  { background: var(--c-danger); color: #fff; }
+			.btn-outline { background: transparent; color: var(--c-primary); border: 1px solid var(--c-primary); }
+			.btn-sm { padding: 5px 12px; font-size: 12px; }
+			.btn-lg { padding: 12px 28px; font-size: 15px; }
+
+			/* Messages */
+			.msg 
+			{
+				padding: 10px 14px; border-radius: var(--radius); font-size: 13px;
+				margin-bottom: 14px; display: none;
+			}
+			.msg.show { display: block; }
+			.msg-success { background: var(--c-success-light); color: #1a7a42; }
+			.msg-error   { background: var(--c-danger-light); color: var(--c-danger); }
+			.msg-warning { background: var(--c-warning-light); color: #935b10; }
+			.msg-info    { background: var(--c-info-light); color: var(--c-info); }
+
+			/* Toast notifications */
+			.toast-container 
+			{
+				position: fixed; top: 20px; right: 20px; z-index: 9999;
+				display: flex; flex-direction: column; gap: 10px;
+				pointer-events: none; max-width: 420px; width: calc(100% - 40px);
+			}
+			.toast 
+			{
+				padding: 14px 40px 14px 16px; border-radius: var(--radius); font-size: 13px;
+				font-weight: 500; line-height: 1.4;
+				box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+				pointer-events: auto; position: relative;
+				animation: toastIn 0.3s ease-out forwards;
+				border-left: 4px solid transparent;
+			}
+			.toast.toast-out { animation: toastOut 0.3s ease-in forwards; }
+			.toast-success { background: var(--c-success-light); color: #1a7a42; border-left-color: var(--c-success); }
+			.toast-error   { background: var(--c-danger-light); color: var(--c-danger); border-left-color: var(--c-danger); }
+			.toast-warning { background: var(--c-warning-light); color: #935b10; border-left-color: var(--c-warning); }
+			.toast-info    { background: var(--c-info-light); color: var(--c-info); border-left-color: var(--c-info); }
+			.toast .toast-close 
+			{
+				position: absolute; top: 8px; right: 10px; background: none;
+				border: none; font-size: 18px; cursor: pointer; color: inherit;
+				opacity: 0.5; line-height: 1; padding: 2px 4px;
+			}
+			.toast .toast-close:hover { opacity: 1; }
+			@keyframes toastIn {
+				from { opacity: 0; transform: translateX(40px); }
+				to   { opacity: 1; transform: translateX(0); }
+			}
+			@keyframes toastOut {
+				from { opacity: 1; transform: translateX(0); }
+				to   { opacity: 0; transform: translateX(40px); }
+			}
+
+			/* States */
+			.state { display: none; }
+			.state.active { display: block; }
+
+			/* Login */
+			.login-wrap 
+			{
+				max-width: 440px; margin: 80px auto; text-align: center;
+			}
+			.login-wrap .logo { font-size: 28px; font-weight: 700; color: var(--c-primary); margin-bottom: 6px; }
+			.login-wrap .subtitle { color: var(--c-muted); font-size: 14px; margin-bottom: 28px; }
+
+			/* Data Set Picker */
+			.ds-picker { max-width: 640px; }
+			.ds-picker .ds-hint { margin-top: 6px; font-size: 12px; color: var(--c-muted); }
+
+			/* Stats */
+			.stats-grid 
+			{
+				display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+				gap: 10px; margin-bottom: 16px;
+			}
+			.stat-card 
+			{
+				background: var(--c-white); border: 1px solid var(--c-border);
+				border-radius: var(--radius); padding: 12px; text-align: center;
+			}
+			.stat-card .sv { font-size: 26px; font-weight: 700; }
+			.stat-card .sl { font-size: 10px; text-transform: uppercase; color: var(--c-muted); font-weight: 600; letter-spacing: 0.3px; }
+
+			/* Table */
+			.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+			.data-table th 
+			{
+				text-align: left; padding: 8px 10px; background: var(--c-bg);
+				font-weight: 600; font-size: 11px; text-transform: uppercase;
+				color: var(--c-muted); border-bottom: 1px solid var(--c-border); letter-spacing: 0.3px;
+			}
+			.data-table td 
+			{
+				padding: 7px 10px; border-bottom: 1px solid var(--c-border); vertical-align: middle;
+			}
+			.data-table tr:hover td { background: var(--c-primary-light); }
+
+			.val-cell { text-align: right; min-width: 90px; font-family: 'SF Mono', Consolas, monospace; font-size: 13px; }
+			.val-input 
+			{
+				width: 100%; padding: 5px 8px; border: 1px solid var(--c-border);
+				border-radius: 4px; font-size: 13px; text-align: right;
+				font-family: 'SF Mono', Consolas, monospace;
+			}
+			.val-input:focus { outline: none; border-color: var(--c-primary); }
+			.val-input.changed { border-color: var(--c-accent); background: #fffbf0; }
+
+			/* Status badges */
+			.badge 
+			{
+				display: inline-block; padding: 2px 8px; border-radius: 10px;
+				font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+			}
+			.badge-match      { background: var(--c-success-light); color: #1a7a42; }
+			.badge-differs     { background: var(--c-warning-light); color: #935b10; }
+			.badge-missing_dhis2 { background: var(--c-danger-light); color: var(--c-danger); }
+			.badge-missing_local { background: var(--c-info-light); color: var(--c-info); }
+			.badge-both_empty  { background: var(--c-bg); color: var(--c-muted); }
+
+			/* Sync log badges */
+			.badge-sync-success { background: var(--c-success-light); color: #1a7a42; }
+			.badge-sync-warning { background: var(--c-warning-light); color: #935b10; }
+			.badge-sync-error   { background: var(--c-danger-light); color: var(--c-danger); }
+			.badge-sync-ok      { background: var(--c-info-light); color: var(--c-info); }
+			.badge-sync-unknown { background: var(--c-bg); color: var(--c-muted); }
+			.sync-details { font-size: 12px; max-width: 420px; white-space: normal; color: var(--c-text); }
+			.sync-details summary { cursor: pointer; color: var(--c-info); font-weight: 600; }
+			.sync-details .sd-block { margin-top: 6px; line-height: 1.4; }
+
+			.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+			.toolbar .spacer { flex: 1; }
+			.toolbar .count { font-size: 13px; color: var(--c-muted); }
+
+			.chk { width: 15px; height: 15px; cursor: pointer; }
+
+			.field-name { font-weight: 500; }
+			.field-combo { font-size: 11px; color: var(--c-muted); }
+			.field-uid { font-family: monospace; font-size: 10px; color: var(--c-muted); }
+			.section-row td
+			{
+				background: #eef3ef;
+				color: var(--c-primary);
+				font-weight: 700;
+				font-size: 12px;
+				text-transform: uppercase;
+				letter-spacing: 0.3px;
+				border-top: 1px solid var(--c-border);
+			}
+			.section-row:hover td { background: #eef3ef; }
+
+			/* School info banner */
+			.school-info 
+			{
+				display: flex; gap: 20px; flex-wrap: wrap; align-items: center;
+				padding: 14px 0; margin-bottom: 10px;
+			}
+			.school-info .si-label { font-size: 11px; text-transform: uppercase; color: var(--c-muted); font-weight: 600; }
+			.school-info .si-value { font-size: 14px; font-weight: 500; }
+
+			.empty-state { text-align: center; padding: 40px; color: var(--c-muted); font-size: 14px; }
+
+			/* Filter bar */
+			.filter-bar { margin-bottom: 14px; }
+			.filter-bar input 
+			{
+				width: 100%; max-width: 400px; padding: 8px 12px;
+				border: 1px solid var(--c-border); border-radius: var(--radius);
+				font-size: 14px;
+			}
+			.filter-bar input:focus { outline: none; border-color: var(--c-primary); }
+
+			@media (max-width: 600px) 
+			{
+				.form-row { flex-direction: column; }
+				.form-group { min-width: 100%; }
+				.stats-grid { grid-template-columns: repeat(2, 1fr); }
+				.login-wrap { margin: 40px 16px; }
+				.header-bar { padding: 12px 16px; }
+			}
+			
+			
+			/* Import from Excel / CSV */
+			.import-zone 
+			{
+				border: 2px dashed var(--c-border); border-radius: var(--radius);
+				padding: 24px; text-align: center; cursor: pointer;
+				transition: border-color 0.15s, background 0.15s;
+				margin-bottom: 14px;
+			}
+			.import-zone:hover, .import-zone.dragover 
+			{
+				border-color: var(--c-primary); background: var(--c-primary-light);
+			}
+			.import-zone input[type=file] { display: none; }
+			.import-zone .iz-icon { font-size: 28px; margin-bottom: 6px; }
+			.import-zone .iz-label { font-size: 14px; font-weight: 600; color: var(--c-primary); }
+			.import-zone .iz-sub   { font-size: 12px; color: var(--c-muted); margin-top: 2px; }
+			.import-zone .iz-chosen { font-size: 13px; color: var(--c-text); font-weight: 500; margin-top: 6px; }
+
+			.import-meta 
+			{
+				display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+				gap: 10px; margin-bottom: 14px;
+			}
+			.import-meta .im-item { background: var(--c-bg); border-radius: var(--radius); padding: 10px 14px; }
+			.import-meta .im-label { font-size: 10px; text-transform: uppercase; color: var(--c-muted); font-weight: 600; }
+			.import-meta .im-val   { font-size: 13px; font-weight: 500; margin-top: 2px; word-break: break-all; }
+			.import-meta input.im-val 
+			{
+				width: 100%; border: 1px solid var(--c-border); border-radius: 4px;
+				padding: 4px 7px; font-size: 13px; font-weight: 500; background: #fff;
+			}
+			.import-meta input.im-val:focus { outline: none; border-color: var(--c-primary); }
+
+			#importPreviewWrap { display: none; }
+			.import-badge-new    { background: var(--c-success-light); color: #1a7a42; }
+			.import-badge-update { background: var(--c-warning-light); color: #935b10; }
+			.import-badge-skip   { background: var(--c-bg); color: var(--c-muted); }
+
+		</style>
+	</head>
+	<body>
+
+		<!-- Toast notification container -->
+		<div class="toast-container" id="toastContainer"></div>
+
+		<!-- ==================== STATE: LOGIN ==================== -->
+		<div id="state-login" class="state active">
+			<div class="login-wrap">
+				<div class="logo">DHIS2 Data Upload</div>
+				<div class="subtitle">Sign in with your school's DHIS2 credentials</div>
+				<div class="card" style="text-align:left;">
+					<div id="loginMsg" class="msg"></div>
+					<div class="form-group" style="margin-bottom:12px;">
+						<label>Username</label>
+						<input type="text" id="loginUser" placeholder="Your DHIS2 username" autocomplete="username">
+					</div>
+					<div class="form-group" style="margin-bottom:16px;">
+						<label>Password</label>
+						<input type="password" id="loginPass" placeholder="Your DHIS2 password" autocomplete="current-password">
+					</div>
+					<button class="btn btn-primary btn-lg" id="btnLogin" onclick="doLogin()" style="width:100%;">
+						Connect to DHIS2
+					</button>
+				</div>
+				<div style="font-size:12px; color:var(--c-muted); margin-top:10px;">
+					Connecting to: <code id="loginURL">https://asc.education.gov.ng/dhis</code>
+				</div>
+			</div>
+		</div>
+
+		<!-- ==================== STATE: DASHBOARD ==================== -->
+		<div id="state-dashboard" class="state">
+			<div class="header-bar">
+				<h1>DHIS2 Data Upload</h1>
+				<span class="school-label" id="headerSchool"></span>
+				<button class="btn-logout" onclick="doLogout()">Sign Out</button>
+			</div>
+
+			<div class="page">
+				<div id="dashMsg" class="msg"></div>
+
+				<!-- School Info -->
+				<div class="card">
+					<div class="school-info">
+						<div><div class="si-label">School</div><div class="si-value" id="infoSchool"></div></div>
+						<div><div class="si-label">Org Unit UID</div><div class="si-value" id="infoUID" style="font-family:monospace;"></div></div>
+						<div><div class="si-label">School Code</div><div class="si-value" id="infoCode"></div></div>
+						<div><div class="si-label">Ward</div><div class="si-value" id="infoParent"></div></div>
+						<div><div class="si-label">DHIS2 User</div><div class="si-value" id="infoUser"></div></div>
+					</div>
+				</div>
+
+				<!-- Data Set + Period Selection -->
+				<div class="card">
+					<h3>Select Data Set and Period</h3>
+					<div class="ds-picker" style="margin-bottom:14px;">
+						<label style="display:block; font-size:11px; font-weight:600; color:var(--c-muted); text-transform:uppercase; letter-spacing:0.4px; margin-bottom:8px;">
+							Choose a Census Form
+						</label>
+						<select id="dsSelect" onchange="onDataSetChange(this.value)">
+							<option value="">Loading data sets...</option>
+						</select>
+						<div class="ds-hint" id="dsHint">Select a dataset from the list.</div>
+					</div>
+					<div class="form-row" style="align-items:flex-end;">
+						<div class="form-group" style="max-width:180px;">
+							<label>Period</label>
+							<input type="text" id="dashPeriod" value="2024" placeholder="e.g. 2024">
+						</div>
+						<div>
+							<button class="btn btn-primary" id="btnLoadData" onclick="loadComparison()" disabled>
+								Load Data
+							</button>
+						</div>
+					</div>
+				</div>
+				<!-- ============ IMPORT FROM EXCEL / CSV ============ -->
+				<div class="card" id="importCard">
+					<h3>📤 Import Data from Spreadsheet</h3>
+					<p style="font-size:13px; color:var(--c-muted); margin-bottom:14px;">
+						Upload a previously downloaded comparison spreadsheet (or a CSV with DE UID, COC UID, and Value columns)
+						to update your local values and push them to DHIS2 for <strong>this school only</strong>.
+					</p>
+
+					<!-- Drop zone -->
+					<div class="import-zone" id="importZone" onclick="document.getElementById('importFile').click()"
+						 ondragover="event.preventDefault(); this.classList.add('dragover')"
+						 ondragleave="this.classList.remove('dragover')"
+						 ondrop="handleImportDrop(event)">
+						<input type="file" id="importFile" accept=".xlsx,.csv" onchange="parseImportFile()">
+						<div class="iz-icon">📂</div>
+						<div class="iz-label">Click or drag & drop a file</div>
+						<div class="iz-sub">Accepts .xlsx (exported from this system) or .csv</div>
+						<div class="iz-chosen" id="importFileName"></div>
+					</div>
+
+					<!-- Status message -->
+					<div id="importMsg" class="msg"></div>
+
+					<!-- Preview panel (shown after parsing) -->
+					<div id="importPreviewWrap" style="display:none;">
+
+						<!-- Metadata — org UID is LOCKED to session -->
+						<div class="import-meta" id="importMeta"></div>
+
+						<!-- Data preview table -->
+						<div id="importTableWrap" style="overflow-x:auto; margin-bottom:14px;"></div>
+
+						<!-- Action buttons -->
+						<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+							<button class="btn btn-accent btn-sm" onclick="doImportSaveLocal()">
+								💾 Save Locally Only
+							</button>
+							<button class="btn btn-primary" id="btnImportPush" onclick="doImportSaveAndPush()">
+								🚀 Save & Push to DHIS2
+							</button>
+							<button class="btn btn-outline btn-sm" onclick="clearImport()">✕ Clear</button>
+							<span style="font-size:12px; color:var(--c-muted);" id="importRowCount"></span>
+						</div>
+					</div>
+				</div>
+
+				<!-- Comparison Results -->
+				<div id="comparisonSection" style="display:none;">
+
+					<!-- Summary -->
+					<div class="stats-grid" id="compStats">
+						<div class="stat-card"><div class="sv" id="csTotal" style="color:var(--c-primary);">0</div><div class="sl">Total Fields</div></div>
+						<div class="stat-card"><div class="sv" id="csMatch" style="color:var(--c-success);">0</div><div class="sl">Match</div></div>
+						<div class="stat-card"><div class="sv" id="csDiffers" style="color:var(--c-warning);">0</div><div class="sl">Differs</div></div>
+						<div class="stat-card"><div class="sv" id="csMissDhis2" style="color:var(--c-danger);">0</div><div class="sl">Missing in DHIS2</div></div>
+						<div class="stat-card"><div class="sv" id="csMissLocal" style="color:var(--c-info);">0</div><div class="sl">Missing Locally</div></div>
+						<div class="stat-card"><div class="sv" id="csEmpty" style="color:var(--c-muted);">0</div><div class="sl">Both Empty</div></div>
+					</div>
+
+					<!-- Data Table -->
+					<div class="card">
+						<h3 id="compTitle">Data Comparison</h3>
+
+						<div class="filter-bar">
+							<input type="text" id="filterField" placeholder="Filter by field name..." oninput="filterTable()">
+						</div>
+
+						<div class="toolbar">
+							<button class="btn btn-outline btn-sm" onclick="selectBy('missing_dhis2')">Select Missing in DHIS2</button>
+							<button class="btn btn-outline btn-sm" onclick="selectBy('differs')">Select Differs</button>
+							<button class="btn btn-outline btn-sm" onclick="selectBy('all')">Select All Pushable</button>
+							<button class="btn btn-outline btn-sm" onclick="selectBy('none')">Deselect All</button>
+							<span class="spacer"></span>
+							<span class="count" id="selCount">0 selected</span>
+						</div>
+
+						<div style="overflow-x:auto;">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th style="width:30px;"><input type="checkbox" class="chk" id="chkAll" onchange="toggleAll(this)"></th>
+										<th>Data Element</th>
+										<th style="text-align:right;">DHIS2 Value</th>
+										<th style="text-align:right; min-width:120px;">Local Value</th>
+										<th>Status</th>
+									</tr>
+								</thead>
+								<tbody id="compBody"></tbody>
+							</table>
+						</div>
+
+						<div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
+							<button class="btn btn-accent" onclick="saveLocalAll()">Save All Local Values</button>
+							<button class="btn btn-primary" id="btnPush" onclick="pushSelected()">Push Selected → DHIS2</button>
+							<button class="btn btn-outline" onclick="downloadExcel()">⬇ Download Excel</button>
+						</div>
+					</div>
+
+					<!-- Sync Logs -->
+					<div class="card">
+						<h3>Sync History</h3>
+						<div id="logsWrap"><div class="empty-state">No sync history yet.</div></div>
+					</div>
+				</div>
+
+			</div>
+		</div>
+
+
+		<script>
+			// ================================================================
+			// STATE
+			// ================================================================
+			const AJAX = '/ajax';
+			let session = {
+				username: '',
+				orgUnitUID: '',
+				schoolName: '',
+				selectedDS: null,   // { id, name }
+				compRows: [],       // current comparison rows
+			};
+
+			function showState(id) 
+			{
+				document.querySelectorAll('.state').forEach(s => s.classList.remove('active'));
+				document.getElementById('state-' + id).classList.add('active');
+			}
+
+			function showMsg(elID, type, text) 
+			{
+				// Login messages stay inline; everything else becomes a toast
+				if (elID === 'loginMsg') 
+				{
+					const el = document.getElementById(elID);
+					if (!el) return;
+					el.className = 'msg show msg-' + type;
+					el.textContent = text;
+					if (type !== 'warning') setTimeout(() => el.classList.remove('show'), 10000);
+					return;
+				}
+
+				// Create a toast notification
+				const container = document.getElementById('toastContainer');
+				const toast = document.createElement('div');
+				toast.className = 'toast toast-' + type;
+				toast.innerHTML = `<span>${esc(text)}</span><button class="toast-close" onclick="dismissToast(this.parentElement)">&times;</button>`;
+				container.appendChild(toast);
+
+				// Auto-dismiss (longer for warnings so users can read them)
+				const delay = type === 'warning' ? 8000 : 6000;
+				setTimeout(() => dismissToast(toast), delay);
+			}
+
+			function dismissToast(toast) 
+			{
+				if (!toast || toast.classList.contains('toast-out')) return;
+				toast.classList.add('toast-out');
+				setTimeout(() => toast.remove(), 300);
+			}
+
+
+
+			// ================================================================
+			// LOGIN
+			// ================================================================
+			function doLogin() 
+			{
+				const user = document.getElementById('loginUser').value.trim();
+				const pass = document.getElementById('loginPass').value.trim();
+				if (!user || !pass) { showMsg('loginMsg', 'error', 'Enter username and password.'); return; }
+
+				const btn = document.getElementById('btnLogin');
+				btn.disabled = true; btn.textContent = 'Connecting...';
+
+				ajax('login', { username: user, password: pass }, res => {
+					btn.disabled = false; btn.textContent = 'Connect to DHIS2';
+
+					if (!res.success) 
+					{
+						showMsg('loginMsg', 'error', res.message);
+						return;
+					}
+
+					// Clear all stale data from any previous session
+					resetDashboard();
+
+					// Store session
+					session.username   = user;
+					session.orgUnitUID = res.orgUnitUID;
+					session.schoolName = res.schoolName;
+
+					// Populate dashboard
+					document.getElementById('headerSchool').textContent = res.schoolName;
+					document.getElementById('infoSchool').textContent   = res.schoolName;
+					document.getElementById('infoUID').textContent      = res.orgUnitUID;
+					document.getElementById('infoCode').textContent     = res.schoolCode || '—';
+					const ward = (res.wardName || res.parentName || '').trim();
+					const lga = (res.lgaName || '').trim();
+					document.getElementById('infoParent').textContent = ward
+						? (lga ? (ward + ' (LGA: ' + lga + ')') : ward)
+						: '—';
+					document.getElementById('infoUser').textContent     = res.userName || '—';
+
+					showState('dashboard');
+					loadDataSets();
+				});
+			}
+
+			// Allow Enter key to submit login
+			document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+			document.getElementById('loginUser').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+			/**
+			 * Wipe all dashboard state so no stale data leaks between accounts.
+			 * Called on logout AND before populating a fresh login.
+			 */
+			function resetDashboard()
+			{
+				// 1. Session object
+				session = { username:'', orgUnitUID:'', schoolName:'', selectedDS:null, compRows:[] };
+
+				// 2. Header bar
+				document.getElementById('headerSchool').textContent = '';
+
+				// 3. School info labels
+				['infoSchool','infoUID','infoCode','infoParent','infoUser'].forEach(id => {
+					document.getElementById(id).textContent = '';
+				});
+
+				// 4. Period field
+				document.getElementById('dashPeriod').value = '2024';
+
+				// 5. Dataset dropdown — reset to placeholder, disable Load button
+				document.getElementById('dsSelect').innerHTML = '<option value="">Loading data sets...</option>';
+				document.getElementById('dsHint').textContent = 'Select a dataset from the list.';
+				document.getElementById('btnLoadData').disabled = true;
+
+				// 6. Comparison section — hide + clear contents
+				document.getElementById('comparisonSection').style.display = 'none';
+				document.getElementById('compBody').innerHTML = '';
+				document.getElementById('filterField').value = '';
+				['csTotal','csMatch','csDiffers','csMissDhis2','csMissLocal','csEmpty'].forEach(id => {
+					document.getElementById(id).textContent = '0';
+				});
+				document.getElementById('selCount').textContent = '0 selected';
+				document.getElementById('chkAll').checked = false;
+
+				// 7. Sync logs
+				document.getElementById('logsWrap').innerHTML = '<div class="empty-state">No sync history yet.</div>';
+
+				// 8. Import section
+				clearImport();
+
+				// 9. Dismiss any active toasts
+				document.querySelectorAll('.toast').forEach(t => t.remove());
+
+				// 10. Clear dashboard message
+				const dashMsg = document.getElementById('dashMsg');
+				dashMsg.className = 'msg';
+				dashMsg.textContent = '';
+
+				// 11. Clear login message
+				const loginMsg = document.getElementById('loginMsg');
+				loginMsg.className = 'msg';
+				loginMsg.textContent = '';
+			}
+
+			function doLogout() 
+			{
+				ajax('logout', {}, () => {});
+				resetDashboard();
+				document.getElementById('loginUser').value = '';
+				document.getElementById('loginPass').value = '';
+				showState('login');
+			}
+
+			// Handle browser back-forward cache — if the page is restored from
+			// bfcache after navigation, force a clean slate so stale JS state
+			// from a previous session doesn't persist.
+			window.addEventListener('pageshow', function(e) {
+				if (e.persisted) {
+					resetDashboard();
+					document.getElementById('loginUser').value = '';
+					document.getElementById('loginPass').value = '';
+					showState('login');
+				}
+			});
+
+
+			// ================================================================
+			// DATA SETS
+			// ================================================================
+			function loadDataSets() 
+			{
+				ajax('get_datasets', {}, res => {
+					const dsSelect = document.getElementById('dsSelect');
+					if (!res.success || !res.data || res.data.length === 0) {
+						dsSelect.innerHTML = '<option value="">No data sets found.</option>';
+						document.getElementById('dsHint').textContent = 'No data sets found for this user.';
+						return;
+					}
+
+					dsSelect.innerHTML = '<option value="">Select a census form...</option>';
+					res.data.forEach(ds => {
+						const opt = document.createElement('option');
+						opt.value = ds.id;
+						opt.textContent = ds.name + ' (' + ds.id + ')';
+						dsSelect.appendChild(opt);
+					});
+
+					const preferredDatasetByKeyword = {
+						IQS: 'W36yBpVEUkH',
+						JSS: 'uSw8GwP0417',
+						PRY: 'MLTLNUmvS8r',
+						PVT: 'pJydop5Fpsz',
+						TVET: 'XERITHzkeSI',
+						SSS: 'RlfDdEEZ317',
+					};
+
+					const schoolText = (session.schoolName || '').toUpperCase();
+					const keywordPriority = ['IQS', 'JSS', 'PRY', 'PVT', 'TVET', 'SSS'];
+					let autoUID = '';
+					for (const keyword of keywordPriority) {
+						if (new RegExp('\\b' + keyword + '\\b').test(schoolText)) {
+							autoUID = preferredDatasetByKeyword[keyword] || '';
+							break;
+						}
+					}
+
+					if (autoUID && res.data.some(ds => ds.id === autoUID)) {
+						dsSelect.value = autoUID;
+						onDataSetChange(autoUID, true);
+					} else {
+						onDataSetChange('');
+					}
+				});
+			}
+
+			function onDataSetChange(datasetUID, autoSelected = false) 
+			{
+				const hint = document.getElementById('dsHint');
+				if (!datasetUID) {
+					session.selectedDS = null;
+					document.getElementById('btnLoadData').disabled = true;
+					hint.textContent = 'Select a dataset from the list.';
+					return;
+				}
+
+				const dsSelect = document.getElementById('dsSelect');
+				const selectedOption = dsSelect.options[dsSelect.selectedIndex];
+				const fullLabel = selectedOption ? selectedOption.textContent : datasetUID;
+				const dsName = fullLabel.replace(/\s*\([A-Za-z0-9]+\)\s*$/, '');
+
+				session.selectedDS = { id: datasetUID, name: dsName };
+				document.getElementById('btnLoadData').disabled = false;
+				hint.textContent = (autoSelected ? 'Auto-selected: ' : 'Selected: ') + dsName + ' (' + datasetUID + ')';
+			}
+
+
+
+			// ================================================================
+			// COMPARISON
+			// ================================================================
+			function loadComparison() 
+			{
+				const period = document.getElementById('dashPeriod').value.trim();
+				if (!session.selectedDS) { showMsg('dashMsg', 'error', 'Select a data set first.'); return; }
+				if (!period) { showMsg('dashMsg', 'error', 'Enter a period.'); return; }
+
+				const btn = document.getElementById('btnLoadData');
+				btn.disabled = true; btn.textContent = 'Loading...';
+				showMsg('dashMsg', 'warning', 'Fetching data from DHIS2 — this may take a moment...');
+
+				ajax('compare', {
+					orgUnitUID: session.orgUnitUID,
+					period: period,
+					dataSetUID: session.selectedDS.id,
+				}, res => {
+					btn.disabled = false; btn.textContent = 'Load Data';
+
+					if (!res.success) {
+						showMsg('dashMsg', 'error', res.message);
+						return;
+					}
+
+					showMsg('dashMsg', 'success', 'Data loaded. Compare and edit below.');
+					session.compRows = res.data.rows;
+					renderSummary(res.data.summary);
+					renderCompTable(res.data.rows);
+
+					// Surface metadata mismatches where DHIS2 returned values that
+					// don't map to the current Data Element + COC grid.
+					const dbg = res.data.debug || {};
+					if ((dbg.matched_by_name_fallback || 0) > 0) {
+						showMsg('dashMsg', 'info',
+							'Mapped ' + dbg.matched_by_name_fallback +
+							' value(s) using name fallback (UID mapping mismatch detected).');
+					}
+					if ((dbg.matched_by_uid_name_resolution || 0) > 0) {
+						showMsg('dashMsg', 'info',
+							'Mapped ' + dbg.matched_by_uid_name_resolution +
+							' value(s) by resolving unmatched UID keys to metadata names.');
+					}
+					if ((dbg.matched_by_uid_cocname_resolution || 0) > 0) {
+						showMsg('dashMsg', 'info',
+							'Mapped ' + dbg.matched_by_uid_cocname_resolution +
+							' value(s) using DE UID + combo-name dynamic fallback.');
+					}
+					if ((dbg.export_map_fallback_enabled || false) && (dbg.dataset_export_file_used || false) && (dbg.matched_by_export_file || 0) > 0) {
+						showMsg('dashMsg', 'info',
+							'Mapped ' + dbg.matched_by_export_file +
+							' value(s) from dataset export file (' +
+							(dbg.dataset_export_row_count || 0) + ' rows loaded).');
+					}
+					if ((dbg.unmatched_fetched_uid_key_count || 0) > 0) {
+						showMsg('dashMsg', 'warning',
+							'DHIS2 returned ' + dbg.unmatched_fetched_uid_key_count +
+							' value(s) that do not match this dataset matrix (DE+COC). ' +
+							'This usually means category combo mapping differs for some fields.');
+					}
+					loadSyncLogs();
+					document.getElementById('comparisonSection').style.display = 'block';
+					document.getElementById('compTitle').textContent =
+						session.selectedDS.name + ' — ' + period;
+					
+					// Scroll to comparison
+					document.getElementById('comparisonSection').scrollIntoView({ behavior: 'smooth' });
+				});
+			}
+
+			function renderSummary(s) 
+			{
+				document.getElementById('csTotal').textContent     = s.total;
+				document.getElementById('csMatch').textContent     = s.match;
+				document.getElementById('csDiffers').textContent    = s.differs;
+				document.getElementById('csMissDhis2').textContent  = s.missing_dhis2;
+				document.getElementById('csMissLocal').textContent  = s.missing_local;
+				document.getElementById('csEmpty').textContent      = s.both_empty;
+			}
+
+			function renderCompTable(rows) 
+			{
+				const tbody = document.getElementById('compBody');
+				tbody.innerHTML = '';
+
+				const labels = {
+					match: 'Match', differs: 'Differs', missing_dhis2: 'Missing in DHIS2',
+					missing_local: 'Missing Locally', both_empty: 'Both Empty',
+				};
+
+				let currentSection = '';
+				rows.forEach((row, i) => {
+					const sectionLabel = row.sectionName || 'Unsectioned';
+					if (sectionLabel !== currentSection) {
+						currentSection = sectionLabel;
+						const sTr = document.createElement('tr');
+						sTr.className = 'section-row';
+						sTr.dataset.section = sectionLabel.toLowerCase();
+						sTr.innerHTML = `<td colspan="5">${esc(sectionLabel)}</td>`;
+						tbody.appendChild(sTr);
+					}
+
+					const canPush = row.localValue !== '' && row.status !== 'match';
+					const comboLabel = (row.cocName && row.cocName !== 'default' && row.cocName !== '(default)')
+						? row.cocName : '';
+
+					const tr = document.createElement('tr');
+					tr.classList.add('comp-row');
+					tr.dataset.idx = i;
+					tr.dataset.section = sectionLabel.toLowerCase();
+					tr.dataset.fieldname = (row.deName + ' ' + comboLabel + ' ' + sectionLabel).toLowerCase();
+					tr.innerHTML = `
+						<td><input type="checkbox" class="chk row-chk" data-idx="${i}" 
+								   data-key="${row.deUID}|${row.cocUID}" 
+								   ${canPush ? '' : 'disabled'} onchange="updateSelCount()"></td>
+						<td>
+							<div class="field-name">${esc(row.deName)}</div>
+							${comboLabel ? '<div class="field-combo">' + esc(comboLabel) + '</div>' : ''}
+							<div class="field-uid">${row.deUID}${row.cocUID ? ' | ' + row.cocUID : ''}</div>
+						</td>
+						<td class="val-cell">${row.dhis2Value !== '' ? esc(row.dhis2Value) : '<span style="color:var(--c-muted);">—</span>'}</td>
+						<td class="val-cell">
+							<input type="text" class="val-input" 
+								   data-de="${row.deUID}" data-coc="${row.cocUID}"
+								   data-orig="${escAttr(row.localValue)}"
+								   value="${esc(row.localValue)}"
+								   placeholder="—"
+								   oninput="onValChange(this)">
+						</td>
+						<td><span class="badge badge-${row.status}">${labels[row.status] || row.status}</span></td>
+					`;
+					tbody.appendChild(tr);
+				});
+
+				filterTable();
+				updateSelCount();
+			}
+
+			function onValChange(input) 
+			{
+				if (input.value !== input.dataset.orig) {
+					input.classList.add('changed');
+				} else {
+					input.classList.remove('changed');
+				}
+
+				// Enable / disable the row's checkbox based on whether a value is present
+				const tr  = input.closest('tr');
+				const cb  = tr ? tr.querySelector('.row-chk') : null;
+				if (cb) {
+					const idx    = parseInt(cb.dataset.idx);
+					const row    = session.compRows[idx];
+					const hasVal = input.value.trim() !== '';
+					// Pushable when there is a local value and status is not already a match
+					cb.disabled = !(hasVal && row && row.status !== 'match');
+					if (cb.disabled) cb.checked = false;
+					updateSelCount();
+				}
+			}
+
+			function filterTable() 
+			{
+				const q = document.getElementById('filterField').value.toLowerCase();
+				document.querySelectorAll('#compBody .comp-row').forEach(tr => {
+					const name = tr.dataset.fieldname || '';
+					tr.style.display = name.includes(q) ? '' : 'none';
+				});
+
+				// Show a section header only if at least one row in that section is visible.
+				let sectionHeader = null;
+				let sectionHasVisibleRows = false;
+				document.querySelectorAll('#compBody tr').forEach(tr => {
+					if (tr.classList.contains('section-row')) {
+						if (sectionHeader) {
+							sectionHeader.style.display = sectionHasVisibleRows ? '' : 'none';
+						}
+						sectionHeader = tr;
+						sectionHasVisibleRows = false;
+						return;
+					}
+					if (tr.classList.contains('comp-row') && tr.style.display !== 'none') {
+						sectionHasVisibleRows = true;
+					}
+				});
+				if (sectionHeader) {
+					sectionHeader.style.display = sectionHasVisibleRows ? '' : 'none';
+				}
+			}
+
+
+
+			// ================================================================
+			// SELECTION
+			// ================================================================
+			function selectBy(mode) 
+			{
+				document.querySelectorAll('.row-chk').forEach(cb => {
+					if (cb.disabled) return;
+					const idx = parseInt(cb.dataset.idx);
+					const row = session.compRows[idx];
+					if (mode === 'none') cb.checked = false;
+					else if (mode === 'all') cb.checked = true;
+					else if (mode === 'differs') cb.checked = row.status === 'differs';
+					else if (mode === 'missing_dhis2') cb.checked = row.status === 'missing_dhis2';
+				});
+				updateSelCount();
+			}
+
+			function toggleAll(master) 
+			{
+				document.querySelectorAll('.row-chk').forEach(cb => { if (!cb.disabled) cb.checked = master.checked; });
+				updateSelCount();
+			}
+
+			function updateSelCount() 
+			{
+				const n = document.querySelectorAll('.row-chk:checked').length;
+				document.getElementById('selCount').textContent = n + ' selected';
+			}
+
+
+
+			// ================================================================
+			// SAVE LOCAL & PUSH
+			// ================================================================
+			function saveLocalAll() 
+			{
+				const inputs = document.querySelectorAll('.val-input');
+				const entries = [];
+				inputs.forEach(inp => {
+					const val = inp.value.trim();
+					if (val !== '') {
+						entries.push({ deUID: inp.dataset.de, cocUID: inp.dataset.coc, value: val });
+					}
+				});
+
+				if (entries.length === 0) { showMsg('dashMsg', 'warning', 'No values to save.'); return; }
+
+				ajax('save_local_values', {
+					orgUnitUID: session.orgUnitUID,
+					period: document.getElementById('dashPeriod').value.trim(),
+					entries: JSON.stringify(entries),
+				}, res => {
+					showMsg('dashMsg', res.success ? 'success' : 'error', res.message);
+					if (res.success) {
+						inputs.forEach(inp => { inp.dataset.orig = inp.value.trim(); inp.classList.remove('changed'); });
+					}
+				});
+			}
+
+
+			function pushSelected() 
+			{
+				// Auto-save any changed values first
+				const changed = document.querySelectorAll('.val-input.changed');
+				const checks  = document.querySelectorAll('.row-chk:checked');
+
+				if (checks.length === 0) 
+				{
+					showMsg('dashMsg', 'warning', 'Select at least one row to push.');
+					return;
+				}
+
+				const keys = [];
+				checks.forEach(cb => keys.push(cb.dataset.key));
+
+				const period = document.getElementById('dashPeriod').value.trim();
+				const btn = document.getElementById('btnPush');
+				btn.disabled = true; btn.textContent = 'Pushing...';
+
+				// If there are unsaved changes, save first
+				const saveFirst = changed.length > 0;
+				const doThePush = () => {
+					ajax('push', {
+						orgUnitUID: session.orgUnitUID,
+						period: period,
+						dataSetUID: session.selectedDS.id,
+						fieldKeys: JSON.stringify(keys),
+					}, res => {
+						btn.disabled = false; btn.textContent = 'Push Selected → DHIS2';
+						showMsg('dashMsg', res.success ? 'success' : 'error', res.message);
+
+						if (res.success) {
+							// Reload comparison to reflect new statuses
+							loadComparison();
+						}
+					});
+				};
+
+				if (saveFirst) 
+				{
+					const entries = [];
+					changed.forEach(inp => {
+						const val = inp.value.trim();
+						if (val !== '') entries.push({ deUID: inp.dataset.de, cocUID: inp.dataset.coc, value: val });
+					});
+					ajax('save_local_values', {
+						orgUnitUID: session.orgUnitUID, period: period, entries: JSON.stringify(entries),
+					}, res => {
+						if (res.success) {
+							changed.forEach(inp => { inp.dataset.orig = inp.value.trim(); inp.classList.remove('changed'); });
+							doThePush();
+						} else {
+							btn.disabled = false; btn.textContent = 'Push Selected → DHIS2';
+							showMsg('dashMsg', 'error', 'Could not save local values: ' + res.message);
+						}
+					});
+				} 
+				else 
+				{
+					doThePush();
+				}
+			}
+			
+			
+			
+			// ================================================================
+			// EXCEL EXPORT
+			// ================================================================
+			function downloadExcel() 
+			{
+				if (!session.compRows || session.compRows.length === 0) 
+				{
+					showMsg('dashMsg', 'warning', 'No comparison data loaded yet. Click Load Data first.');
+					return;
+				}
+
+				const period   = document.getElementById('dashPeriod').value.trim();
+				const dsName   = session.selectedDS ? session.selectedDS.name : 'Unknown Dataset';
+				const dsUID    = session.selectedDS ? (session.selectedDS.id || session.selectedDS.uid || '') : '';
+				const school   = session.schoolName || 'Unknown School';
+				const orgUID   = session.orgUnitUID || '';
+				const exported = new Date().toLocaleString();
+
+				const statusLabels = {
+					match:         'Match',
+					differs:       'Differs',
+					missing_dhis2: 'Missing in DHIS2',
+					missing_local: 'Missing Locally',
+					both_empty:    'Both Empty',
+				};
+
+				// --- Sheet 1: Comparison Data ---
+				// Header block (rows 1-7), then column headers (row 8), then data (row 9+)
+				const compRows = [
+					['School',       school],
+					['Org Unit UID', orgUID],
+					['Dataset',      dsName],
+					['Dataset UID',  dsUID],      // ← NEW: needed for re-import push
+					['Period',       period],
+					['Exported At',  exported],
+					[],
+					['Data Element', 'Category Option Combo', 'DHIS2 Value', 'Local Value', 'Status', 'DE UID', 'COC UID'],
+				];
+
+				const inputMap = {};
+				document.querySelectorAll('.val-input').forEach(inp => {
+					const k = inp.dataset.de + '|' + inp.dataset.coc;
+					inputMap[k] = inp.value.trim();
+				});
+
+				session.compRows.forEach(row => {
+					const k     = row.deUID + '|' + row.cocUID;
+					const local = inputMap[k] !== undefined ? inputMap[k] : row.localValue;
+					const combo = (row.cocName && row.cocName !== 'default' && row.cocName !== '(default)')
+								  ? row.cocName : '';
+					compRows.push([
+						row.deName,
+						combo,
+						row.dhis2Value !== '' ? row.dhis2Value : '',
+						local !== '' ? local : '',
+						statusLabels[row.status] || row.status,
+						row.deUID,      // ← Col F: DE UID (key for re-import)
+						row.cocUID,     // ← Col G: COC UID (key for re-import)
+					]);
+				});
+
+				// --- Sheet 2: Summary ---
+				const s = (() => {
+					const counts = { total:0, match:0, differs:0, missing_dhis2:0, missing_local:0, both_empty:0 };
+					session.compRows.forEach(r => { counts.total++; counts[r.status] = (counts[r.status] || 0) + 1; });
+					return counts;
+				})();
+
+				const summaryRows = [
+					['Summary',          ''],
+					['Total Fields',     s.total],
+					['Match',            s.match],
+					['Differs',          s.differs],
+					['Missing in DHIS2', s.missing_dhis2],
+					['Missing Locally',  s.missing_local],
+					['Both Empty',       s.both_empty],
+				];
+
+				// --- Build workbook ---
+				const wb     = XLSX.utils.book_new();
+				const wsComp = XLSX.utils.aoa_to_sheet(compRows);
+
+				wsComp['!cols'] = [
+					{ wch: 52 },   // Data Element
+					{ wch: 28 },   // Category Option Combo
+					{ wch: 14 },   // DHIS2 Value
+					{ wch: 14 },   // Local Value
+					{ wch: 20 },   // Status
+					{ wch: 12 },   // DE UID
+					{ wch: 12 },   // COC UID
+				];
+
+				const wsSum = XLSX.utils.aoa_to_sheet(summaryRows);
+				wsSum['!cols'] = [{ wch: 22 }, { wch: 10 }];
+
+				XLSX.utils.book_append_sheet(wb, wsComp, 'Comparison');
+				XLSX.utils.book_append_sheet(wb, wsSum,  'Summary');
+
+				const safeName = (school + '_' + dsName + '_' + period)
+					.replace(/[^a-zA-Z0-9_\-]/g, '_')
+					.replace(/_+/g, '_')
+					.substring(0, 80);
+
+				XLSX.writeFile(wb, safeName + '.xlsx');
+				showMsg('dashMsg', 'success', 'Excel file downloaded — ' + safeName + '.xlsx');
+			}
+
+
+
+			// ================================================================
+			// IMPORT FROM EXCEL / CSV
+			// ================================================================
+
+			let importData = null; // holds parsed import state
+
+			function handleImportDrop(e) 
+			{
+				e.preventDefault();
+				document.getElementById('importZone').classList.remove('dragover');
+				const file = e.dataTransfer.files[0];
+				if (!file) return;
+				const ext = file.name.split('.').pop().toLowerCase();
+				if (ext !== 'xlsx' && ext !== 'csv') 
+				{
+					showMsg('importMsg', 'error', 'Please drop an .xlsx or .csv file.');
+					return;
+				}
+				parseImportFileObject(file);
+			}
+
+			function parseImportFile() 
+			{
+				const file = document.getElementById('importFile').files[0];
+				if (!file) return;
+				parseImportFileObject(file);
+			}
+
+			function parseImportFileObject(file) 
+			{
+				document.getElementById('importFileName').textContent = '📄 ' + file.name;
+				const ext = file.name.split('.').pop().toLowerCase();
+
+				if (ext === 'csv') 
+				{
+					parseCsvFile(file);
+				} 
+				else 
+				{
+					parseXlsxFile(file);
+				}
+			}
+
+
+			// --- XLSX parsing (same format as downloaded comparison file) ---
+			function parseXlsxFile(file) 
+			{
+				const reader = new FileReader();
+				reader.onload = e => {
+					try 
+					{
+						const wb = XLSX.read(e.target.result, { type: 'array' });
+						const ws = wb.Sheets['Comparison'];
+						if (!ws) 
+						{
+							showMsg('importMsg', 'error', 'Sheet "Comparison" not found. Use a file exported by this system.');
+							return;
+						}
+
+						const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+						const getVal = label => {
+							const r = rows.find(r => String(r[0]).trim() === label);
+							return r ? String(r[1] || '').trim() : '';
+						};
+
+						const meta = {
+							school:  getVal('School'),
+							orgUID:  getVal('Org Unit UID'),
+							dsName:  getVal('Dataset'),
+							dsUID:   getVal('Dataset UID'),
+							period:  getVal('Period'),
+						};
+
+						// Warn if the file is for a DIFFERENT school
+						if (meta.orgUID && meta.orgUID !== session.orgUnitUID) 
+						{
+							showMsg('importMsg', 'warning',
+								'⚠ This file was exported for a different school (' + meta.orgUID + '). ' +
+								'Values will be imported under YOUR school (' + session.orgUnitUID + ') instead.');
+						}
+
+						if (!meta.dsUID) 
+						{
+							showMsg('importMsg', 'warning',
+								'Dataset UID is missing from this file (older export). ' +
+								'You can enter it manually below, or re-export from a comparison first.');
+						}
+
+						// Find column-header row
+						const hdrIdx = rows.findIndex(r => String(r[0]).trim() === 'Data Element');
+						if (hdrIdx < 0) 
+						{
+							showMsg('importMsg', 'error', 'Could not locate the "Data Element" header row.');
+							return;
+						}
+
+						const parsed = [];
+						for (let i = hdrIdx + 1; i < rows.length; i++) 
+						{
+							const r      = rows[i];
+							const deUID  = String(r[5] || '').trim();
+							const cocUID = String(r[6] || '').trim();
+							if (!deUID) continue;
+
+							const fileLocal = String(r[3] || '').trim();
+							const fileDhis2 = String(r[2] || '').trim();
+
+							parsed.push({
+								deName:    String(r[0] || '').trim(),
+								cocName:   String(r[1] || '').trim(),
+								dhis2Val:  fileDhis2,
+								localVal:  fileLocal || fileDhis2,  // fallback to DHIS2 value for cross-school transfer
+								fromDhis2: !fileLocal && !!fileDhis2,  // flag: value sourced from DHIS2 column
+								deUID,
+								cocUID,
+							});
+						}
+
+						if (parsed.length === 0) 
+						{
+							showMsg('importMsg', 'error', 'No data rows found in the file.');
+							return;
+						}
+
+						importData = { 
+							meta: {
+								school:  meta.school || session.schoolName,
+								orgUID:  session.orgUnitUID,   // ALWAYS locked to session
+								dsName:  meta.dsName,
+								dsUID:   meta.dsUID,
+								period:  meta.period || document.getElementById('dashPeriod').value.trim(),
+							}, 
+							rows: parsed, 
+							source: 'xlsx',
+						};
+						renderImportPreview();
+					} 
+					catch(err) 
+					{
+						showMsg('importMsg', 'error', 'Failed to parse Excel file: ' + err.message);
+					}
+				};
+				reader.readAsArrayBuffer(file);
+			}
+
+
+			// --- CSV parsing ---
+			// Expected columns (header row required, order-flexible):
+			//   DE UID (or deUID, dataElementUID)
+			//   COC UID (or cocUID, categoryOptionComboUID) — optional
+			//   Value (or localValue, value)
+			//   Data Element (or deName) — optional, for display
+			//   Category Option Combo (or cocName) — optional, for display
+			function parseCsvFile(file) 
+			{
+				const reader = new FileReader();
+				reader.onload = e => {
+					try 
+					{
+						const text = e.target.result;
+						const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
+						if (lines.length < 2) 
+						{
+							showMsg('importMsg', 'error', 'CSV file must have a header row and at least one data row.');
+							return;
+						}
+
+						// Parse header
+						const headers = parseCSVLine(lines[0]).map(h => h.trim().toLowerCase().replace(/[^a-z0-9]/g, ''));
+
+						// Map columns flexibly
+						const colMap = {
+							deUID:   findCol(headers, ['deuid', 'dataelementuid', 'dataelement']),
+							cocUID:  findCol(headers, ['cocuid', 'categoryoptioncombuid', 'categoryoptioncombo', 'catoptcombouid']),
+							value:   findCol(headers, ['value', 'localvalue']),
+							deName:  findCol(headers, ['dataelement', 'dename', 'name']),
+							cocName: findCol(headers, ['categoryoptioncombo', 'cocname', 'combo']),
+						};
+
+						if (colMap.deUID < 0) 
+						{
+							showMsg('importMsg', 'error', 
+								'CSV must have a column named "DE UID" (or "deUID" or "dataElementUID"). ' +
+								'Found headers: ' + parseCSVLine(lines[0]).join(', '));
+							return;
+						}
+						if (colMap.value < 0) 
+						{
+							showMsg('importMsg', 'error', 
+								'CSV must have a column named "Value" (or "localValue"). ' +
+								'Found headers: ' + parseCSVLine(lines[0]).join(', '));
+							return;
+						}
+
+						const parsed = [];
+						for (let i = 1; i < lines.length; i++) 
+						{
+							const cols   = parseCSVLine(lines[i]);
+							const deUID  = (cols[colMap.deUID] || '').trim();
+							if (!deUID) continue;
+
+							parsed.push({
+								deName:   colMap.deName >= 0  ? (cols[colMap.deName] || '').trim()  : deUID,
+								cocName:  colMap.cocName >= 0 ? (cols[colMap.cocName] || '').trim() : '',
+								dhis2Val: '',   // CSV doesn't carry DHIS2 values
+								localVal: (cols[colMap.value] || '').trim(),
+								deUID,
+								cocUID:   colMap.cocUID >= 0 ? (cols[colMap.cocUID] || '').trim() : '',
+							});
+						}
+
+						if (parsed.length === 0) 
+						{
+							showMsg('importMsg', 'error', 'No valid data rows found in the CSV.');
+							return;
+						}
+
+						importData = {
+							meta: {
+								school:  session.schoolName,
+								orgUID:  session.orgUnitUID,   // ALWAYS locked to session
+								dsName:  '',
+								dsUID:   '',
+								period:  document.getElementById('dashPeriod').value.trim(),
+							},
+							rows: parsed,
+							source: 'csv',
+						};
+
+						showMsg('importMsg', 'info', 
+							'CSV loaded. Please confirm the Dataset UID and Period below before pushing.');
+						renderImportPreview();
+					} 
+					catch(err) 
+					{
+						showMsg('importMsg', 'error', 'Failed to parse CSV: ' + err.message);
+					}
+				};
+				reader.readAsText(file);
+			}
+
+			// Simple CSV line parser (handles quoted fields with commas)
+			function parseCSVLine(line) 
+			{
+				const result = [];
+				let current = '';
+				let inQuotes = false;
+				for (let i = 0; i < line.length; i++) 
+				{
+					const ch = line[i];
+					if (inQuotes) 
+					{
+						if (ch === '"' && line[i+1] === '"') { current += '"'; i++; }
+						else if (ch === '"') { inQuotes = false; }
+						else { current += ch; }
+					} 
+					else 
+					{
+						if (ch === '"') { inQuotes = true; }
+						else if (ch === ',') { result.push(current); current = ''; }
+						else { current += ch; }
+					}
+				}
+				result.push(current);
+				return result;
+			}
+
+			// Find a column index by trying multiple possible header names
+			function findCol(headers, candidates) 
+			{
+				for (const c of candidates) 
+				{
+					const idx = headers.indexOf(c);
+					if (idx >= 0) return idx;
+				}
+				return -1;
+			}
+
+
+			// --- Render import preview ---
+			function renderImportPreview() 
+			{
+				if (!importData) return;
+				const { meta, rows } = importData;
+
+				const withValues = rows.filter(r => r.localVal !== '');
+				const fromDhis2Count = rows.filter(r => r.fromDhis2).length;
+				let countText = withValues.length + ' rows with values (of ' + rows.length + ' total)';
+				if (fromDhis2Count > 0) {
+					countText += ' · ' + fromDhis2Count + ' sourced from DHIS2 column';
+				}
+				document.getElementById('importRowCount').textContent = countText;
+
+				// Metadata block — org UID is READ-ONLY (locked to session)
+				const dsUIDField = meta.dsUID
+					? `<input class="im-val" id="importDsUID" value="${esc(meta.dsUID)}" style="font-family:monospace; font-size:11px;">`
+					: `<input class="im-val" id="importDsUID" value="" placeholder="Enter Dataset UID" style="font-family:monospace; font-size:11px; border-color:var(--c-warning);">`;
+
+				document.getElementById('importMeta').innerHTML = `
+					<div class="im-item">
+						<div class="im-label">School</div>
+						<div class="im-val">${esc(meta.school) || esc(session.schoolName)}</div>
+					</div>
+					<div class="im-item">
+						<div class="im-label">Org Unit UID 🔒 locked</div>
+						<div class="im-val" style="font-family:monospace; font-size:12px; color:var(--c-primary); font-weight:600;">${esc(session.orgUnitUID)}</div>
+					</div>
+					<div class="im-item">
+						<div class="im-label">Dataset UID <span style="color:var(--c-accent);">✎ editable</span></div>
+						${dsUIDField}
+					</div>
+					<div class="im-item">
+						<div class="im-label">Period <span style="color:var(--c-accent);">✎ editable</span></div>
+						<input class="im-val" id="importPeriod" value="${esc(meta.period)}" placeholder="e.g. 2024">
+					</div>
+				`;
+
+				// Preview table: only rows WITH local values
+				if (withValues.length === 0) 
+				{
+					document.getElementById('importTableWrap').innerHTML =
+						'<div class="empty-state" style="padding:20px;">No rows have a value — nothing to push.</div>';
+					document.getElementById('btnImportPush').disabled = true;
+				} 
+				else 
+				{
+					let html = `<table class="data-table">
+						<thead>
+							<tr>
+								<th>Data Element</th>
+								<th>Category Option Combo</th>
+								<th style="text-align:right;">DHIS2 Value (in file)</th>
+								<th style="text-align:right;">Value to Push</th>
+								<th>Action</th>
+							</tr>
+						</thead><tbody>`;
+
+					withValues.forEach(r => {
+						let action;
+						if (r.fromDhis2) {
+							action = '<span class="badge import-badge-update">Transfer</span>';
+						} else if (r.dhis2Val === '' || r.dhis2Val === undefined) {
+							action = '<span class="badge import-badge-new">New</span>';
+						} else if (r.dhis2Val !== r.localVal) {
+							action = '<span class="badge import-badge-update">Update</span>';
+						} else {
+							action = '<span class="badge import-badge-skip">Already Matches</span>';
+						}
+						html += `<tr>
+							<td>
+								<div class="field-name">${esc(r.deName)}</div>
+								<div class="field-uid">${r.deUID}${r.cocUID ? ' | ' + r.cocUID : ''}</div>
+							</td>
+							<td class="field-combo">${esc(r.cocName)}</td>
+							<td class="val-cell">${r.dhis2Val !== '' ? esc(r.dhis2Val) : '<span style="color:var(--c-muted);">—</span>'}</td>
+							<td class="val-cell" style="font-weight:600; color:var(--c-primary);">${esc(r.localVal)}</td>
+							<td>${action}</td>
+						</tr>`;
+					});
+
+					html += '</tbody></table>';
+					document.getElementById('importTableWrap').innerHTML = html;
+					document.getElementById('btnImportPush').disabled = false;
+				}
+
+				document.getElementById('importPreviewWrap').style.display = 'block';
+				document.getElementById('importPreviewWrap').scrollIntoView({ behavior: 'smooth' });
+			}
+
+
+			// --- Import: get validated entries ---
+			function getImportEntries() 
+			{
+				if (!importData) return null;
+
+				// Org UID is ALWAYS the session org unit — no user override
+				const orgUID = session.orgUnitUID;
+				const period = document.getElementById('importPeriod').value.trim();
+				const dsUID  = document.getElementById('importDsUID').value.trim();
+
+				if (!period) 
+				{
+					showMsg('importMsg', 'error', 'Period is required.');
+					return null;
+				}
+				if (!dsUID) 
+				{
+					showMsg('importMsg', 'error', 
+						'Dataset UID is required. Select a data set above and load a comparison first — ' +
+						'the UID will appear in the downloaded Excel file.');
+					return null;
+				}
+
+				const entries = importData.rows
+					.filter(r => r.localVal !== '')
+					.map(r => ({ deUID: r.deUID, cocUID: r.cocUID, value: r.localVal }));
+
+				if (entries.length === 0) 
+				{
+					showMsg('importMsg', 'warning', 'No rows with values to process.');
+					return null;
+				}
+				return { orgUID, period, dsUID, entries };
+			}
+
+			function doImportSaveLocal() 
+			{
+				const p = getImportEntries();
+				if (!p) return;
+
+				ajax('save_local_values', {
+					orgUnitUID: p.orgUID,
+					period:     p.period,
+					entries:    JSON.stringify(p.entries),
+				}, res => {
+					showMsg('importMsg', res.success ? 'success' : 'error',
+						res.success
+							? '✔ ' + p.entries.length + ' values saved locally for period ' + p.period + '.'
+							: res.message);
+				});
+			}
+
+			function doImportSaveAndPush() 
+			{
+				const p = getImportEntries();
+				if (!p) return;
+
+				const btn = document.getElementById('btnImportPush');
+				btn.disabled = true; btn.textContent = 'Saving...';
+
+				// Step 1: Save locally
+				ajax('save_local_values', {
+					orgUnitUID: p.orgUID,
+					period:     p.period,
+					entries:    JSON.stringify(p.entries),
+				}, saveRes => {
+					if (!saveRes.success) 
+					{
+						btn.disabled = false; btn.textContent = '🚀 Save & Push to DHIS2';
+						showMsg('importMsg', 'error', 'Save failed: ' + saveRes.message);
+						return;
+					}
+
+					// Step 2: Push to DHIS2 using this user's own credentials
+					btn.textContent = 'Pushing to DHIS2...';
+					const fieldKeys = p.entries.map(e => e.deUID + '|' + e.cocUID);
+
+					ajax('push', {
+						orgUnitUID: p.orgUID,
+						period:     p.period,
+						dataSetUID: p.dsUID,
+						fieldKeys:  JSON.stringify(fieldKeys),
+					}, pushRes => {
+						btn.disabled = false; btn.textContent = '🚀 Save & Push to DHIS2';
+						showMsg('importMsg', pushRes.success ? 'success' : 'error',
+							(pushRes.success ? '✔ DHIS2 Push OK — ' : '✘ Push failed — ') + pushRes.message);
+
+						if (pushRes.success) loadSyncLogs();
+					});
+				});
+			}
+
+			function clearImport() 
+			{
+				importData = null;
+				document.getElementById('importFile').value = '';
+				document.getElementById('importFileName').textContent = '';
+				document.getElementById('importPreviewWrap').style.display = 'none';
+				const msgEl = document.getElementById('importMsg');
+				if (msgEl) msgEl.className = 'msg';
+			}
+
+
+
+			// ================================================================
+			// SYNC LOGS
+			// ================================================================
+			function loadSyncLogs() 
+			{
+				ajax('get_sync_logs', { orgUnitUID: session.orgUnitUID }, res => {
+					const wrap = document.getElementById('logsWrap');
+					if (!res.success || !res.data || res.data.length === 0) 
+					{
+						wrap.innerHTML = '<div class="empty-state">No sync history yet.</div>';
+						return;
+					}
+					let html = `<table class="data-table">
+						<thead><tr><th>Date</th><th>Data Set</th><th>Period</th><th>Batch</th>
+						<th>Imported</th><th>Updated</th><th>Ignored</th><th>Status</th><th>Details</th></tr></thead><tbody>`;
+					res.data.forEach(log => {
+						const status = (log.dhis2Status || 'UNKNOWN').toString().toUpperCase();
+						const syncBadgeClass =
+							status === 'SUCCESS' ? 'badge-sync-success' :
+							status === 'WARNING' ? 'badge-sync-warning' :
+							status === 'ERROR'   ? 'badge-sync-error'   :
+							status === 'OK'      ? 'badge-sync-ok'      :
+							'badge-sync-unknown';
+						const msg = (log.dhis2Message || '').trim();
+						const conflicts = (log.conflictDetails || '').trim();
+						const detailsHtml = (msg || conflicts)
+							? `<details class="sync-details"><summary>View</summary><div class="sd-block">${msg ? '<strong>Message:</strong> ' + esc(msg) + '<br>' : ''}${conflicts ? '<strong>Conflicts:</strong> ' + esc(conflicts) : ''}</div></details>`
+							: '<span style="color:var(--c-muted);">—</span>';
+						html += `<tr>
+							<td>${esc(log.syncedAt)}</td>
+							<td style="font-family:monospace;font-size:11px;">${esc(log.dataSetUID || '—')}</td>
+							<td>${esc(log.period)}</td>
+							<td>${log.batchSize}</td>
+							<td>${log.imported}</td><td>${log.updated}</td><td>${log.ignored}</td>
+							<td><span class="badge ${syncBadgeClass}">${esc(status)}</span></td>
+							<td>${detailsHtml}</td>
+						</tr>`;
+					});
+					html += '</tbody></table>';
+					wrap.innerHTML = html;
+				});
+			}
+
+
+
+			// ================================================================
+			// UTILITIES
+			// ================================================================
+			function ajax(action, data, callback) 
+			{
+				const fd = new FormData();
+				fd.append('action', action);
+				for (const k in data) fd.append(k, data[k]);
+				fetch(AJAX, { method: 'POST', body: fd })
+					.then(r => r.json())
+					.then(res => {
+						if (!res.success && typeof res.message === 'string' && res.message.includes('Session expired')) {
+							resetDashboard();
+							document.getElementById('loginPass').value = '';
+							showState('login');
+							showMsg('loginMsg', 'warning', 'Session expired. Please sign in again.');
+							return;
+						}
+						callback(res);
+					})
+					.catch(err => {
+						console.error('AJAX error:', err);
+						callback({ success: false, message: 'Network error — please try again.' });
+					});
+			}
+
+			function esc(s) 
+			{
+				if (!s && s !== 0) return '';
+				const d = document.createElement('div');
+				d.textContent = s;
+				return d.innerHTML;
+			}
+
+			function escAttr(s) 
+			{
+				return (s || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+			}
+		</script>
+
+	</body>
+</html>
