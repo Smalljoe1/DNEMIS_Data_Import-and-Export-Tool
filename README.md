@@ -1,13 +1,13 @@
 # DNEMIS Data Import and Export Tool
 
-A modern, user-friendly DHIS2 data import/export and comparison tool for Nigerian school census forms. Built with Python (Flask), this app replaces legacy PHP workflows and provides robust, school-friendly data management for education sector reporting.
+A modern, user-friendly DHIS2 data import/export and comparison tool for Nigerian school census forms. Built with Python (Flask), it provides robust, school-friendly data management for education sector reporting.
 
 ## Features
 
 - **DHIS2 Integration**: Secure login, dataset/period selection, and data value sync with DHIS2 API.
 - **School-Aware UI**: Auto-selects the correct census form based on school type (PRY, JSS, SSS, PVT, TVET, IQS).
 - **Sectioned Data Comparison**: Data elements are grouped by DHIS2 section for clarity.
-- **Export/Import**: Download comparison tables as Excel/CSV, import local values from spreadsheet.
+- **Export/Import**: Download comparison tables as Excel/CSV, import local values from a spreadsheet.
 - **Push to DHIS2**: Edit and push only changed or missing values.
 - **Sync History**: View a log of all syncs with status badges.
 - **Local Storage**: SQLite backend for local value caching and sync logs.
