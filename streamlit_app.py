@@ -278,9 +278,11 @@ def main_app():
                         if status in ('SUCCESS', 'OK'):
                             st.success(f"✅ Successfully posted! Imported: {imported}, Updated: {updated}")
                             load_comparison_data()
+                            st.experimental_rerun()
                         else:
                             st.warning(f"⚠️ Post completed with warnings: {status}")
                             st.info(f"Imported: {imported}, Updated: {updated}, Ignored: {ignored}")
+                            st.experimental_rerun()
                     except Exception as e:
                         st.error(f"Failed to post to DHIS2: {str(e)}")
 
@@ -646,27 +648,51 @@ def push_to_dhis2():
             st.session_state.username,
             st.session_state.password
         )
-        
         # Parse response
         response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
         imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
-        
         imported = imp.get('importCount', {}).get('imported', 0)
         updated = imp.get('importCount', {}).get('updated', 0)
         ignored = imp.get('importCount', {}).get('ignored', 0)
         status = imp.get('status', 'UNKNOWN')
-        
+        message = imp.get('description', '') or imp.get('message', '') or ''
+        conflicts = ''
+        if 'conflicts' in imp:
+            conflicts = str(imp['conflicts'])
+        db.log_sync(
+            st.session_state.org_unit_uid,
+            st.session_state.selected_dataset,
+            str(st.session_state.selected_period),
+            len(entries),
+            imported,
+            updated,
+            ignored,
+            status,
+            message,
+            conflicts
+        )
         if status in ('SUCCESS', 'OK'):
             st.success(f"✅ Successfully synced! Imported: {imported}, Updated: {updated}")
-            # Clear edited values and reload
             st.session_state.edited_values = {}
             load_comparison_data()
+            st.experimental_rerun()
         else:
             st.warning(f"⚠️ Sync completed with warnings: {status}")
             st.info(f"Imported: {imported}, Updated: {updated}, Ignored: {ignored}")
-            
+            st.experimental_rerun()
     except Exception as e:
+        db.log_sync(
+            st.session_state.org_unit_uid,
+            st.session_state.selected_dataset,
+            str(st.session_state.selected_period),
+            len(entries),
+            0, 0, len(entries),
+            'ERROR',
+            str(e),
+            ''
+        )
         st.error(f"Failed to push to DHIS2: {str(e)}")
+        st.experimental_rerun()
 
 # Main execution
 init_session_state()
