@@ -201,7 +201,7 @@ def get_dataset_elements(dataset_uid: str, username: str, password: str) -> list
                 'dataSetElements['
                 '  categoryCombo[categoryOptionCombos[id,name]],'
                 '  dataElement['
-                '    id,name,'
+                '    id,name,valueType,'
                 '    categoryCombo[categoryOptionCombos[id,name]]'
                 '  ]'
                 '],'
@@ -256,6 +256,7 @@ def get_dataset_elements(dataset_uid: str, username: str, password: str) -> list
         de = dse.get('dataElement', {})
         de_uid  = de.get('id', '')
         de_name = de.get('name', '')
+        de_type = de.get('valueType', '')
         section_name = section_by_de_uid.get(de_uid, 'Unsectioned')
         section_order = section_order_by_de_uid.get(de_uid, 9999)
 
@@ -272,6 +273,7 @@ def get_dataset_elements(dataset_uid: str, username: str, password: str) -> list
                 elements.append({
                     'deUID': de_uid,
                     'deName': de_name,
+                    'deType': de_type,
                     'cocUID': '',
                     'cocName': 'default',
                     'sectionName': section_name,
@@ -287,6 +289,7 @@ def get_dataset_elements(dataset_uid: str, username: str, password: str) -> list
                 elements.append({
                     'deUID':   de_uid,
                     'deName':  de_name,
+                    'deType':  de_type,
                     'cocUID':  coc_uid,
                     'cocName': coc.get('name', 'default'),
                     'sectionName': section_name,
@@ -352,16 +355,37 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
     """
     data_values = []
     for e in entries:
+        val = e['value']
+        # Exclude if value is nan, None, or empty string
+        if val is None:
+            continue
+        sval = str(val).strip()
+        if sval.lower() == 'nan' or sval == '':
+            continue
+        # If value is a float but represents an integer, send as integer string
+        try:
+            fval = float(sval)
+            if fval.is_integer():
+                sval = str(int(fval))
+        except Exception:
+            pass
         dv = {
             'dataElement': e['deUID'],
             'orgUnit':     org_unit_uid,
             'period':      period,
-            'value':       str(e['value']),
+            'value':       sval,
         }
         # Only include categoryOptionCombo if it's non-empty
         if e.get('cocUID'):
             dv['categoryOptionCombo'] = e['cocUID']
         data_values.append(dv)
-    
+
     payload = {'dataValues': data_values}
+    # DEBUG: Print payload for troubleshooting
+    try:
+        import streamlit as st
+        st.write("Payload to DHIS2:")
+        st.json(payload)
+    except Exception:
+        pass
     return _post('/dataValueSets', username, password, payload)
