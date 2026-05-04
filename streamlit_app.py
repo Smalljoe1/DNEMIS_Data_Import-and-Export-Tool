@@ -21,6 +21,7 @@ def init_session_state():
         'authenticated': False,
         'username': '',
         'password': '',
+        'instance_url': 'https://asc.education.gov.ng/dhis',
         'org_unit_uid': '',
         'school_name': '',
         'school_code': '',
@@ -37,7 +38,23 @@ def init_session_state():
         'show_push_review': False,
         'pending_nav': None,
         'retry_entries': [],
-        'section_edit_modes': {}
+        'section_edit_modes': {},
+        'data_mode': 'Aggregate Forms',
+        'selected_program': None,
+        'selected_program_stage': None,
+        'event_rows': [],
+        'event_element_specs': [],
+        'event_attr_specs': [],
+        'event_original_values': {},
+        'event_meta': {},
+        'event_program_meta': {},
+        'event_attr_columns': [],
+        'event_attr_stats': {},
+        'event_template_overrides': {},
+        'event_last_uploaded_template_sig': '',
+        'event_show_review': False,
+        'event_has_unsaved_edits': False,
+        'events_editor_rev': 0
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -62,15 +79,23 @@ def login_page():
     st.markdown("---")
     
     with st.form("login_form"):
+        instance_url = st.text_input(
+            "DNEMIS Instance URL",
+            value=st.session_state.get('instance_url', 'https://asc.education.gov.ng/dhis'),
+            help="Enter the base URL of your DNEMIS/DHIS2 instance (e.g., https://your-instance.com/dhis)"
+        )
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login")
         
         if submitted:
-            if not username or not password:
-                st.error("Username and password are required.")
+            if not username or not password or not instance_url:
+                st.error("Instance URL, username, and password are required.")
                 return
             try:
+                # Set the DHIS2 base URL before login
+                dhis2.set_base_url(instance_url)
+                st.session_state.instance_url = instance_url
                 info = dhis2.login(username, password)
                 st.session_state.authenticated = True
                 st.session_state.username = username
@@ -98,6 +123,24 @@ def load_datasets(username, password):
     except Exception:
         return []
 
+
+@st.cache_data(ttl=300)
+def load_programs(username, password):
+    try:
+        return dhis2.get_programs(username, password)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300)
+def load_program_stages(program_uid, username, password):
+    if not program_uid:
+        return []
+    try:
+        return dhis2.get_program_stages(program_uid, username, password)
+    except Exception:
+        return []
+
 # Main application
 def main_app():
     # Sidebar with user info and navigation
@@ -109,50 +152,15 @@ def main_app():
         st.markdown(f"**LGA:** {st.session_state.lga_name}")
         st.markdown("---")
         
-        # Dataset selection
-        st.subheader("Select Dataset")
-        
-        datasets = load_datasets(st.session_state.username, st.session_state.password)
-        dataset_options = {ds['name']: ds['id'] for ds in datasets}
+        # Data type selection
+        st.subheader("Data Type")
+        st.radio(
+            "Choose data model",
+            options=["Aggregate Forms", "Events"],
+            key="data_mode"
+        )
 
-        # Mapping from prefix to dataset name substring and UID
-        prefix_map = {
-            'IQS': 'A. Adult and Non Formal Education (IQS/IQTE) Census Form-W36yBpVEUkH',
-            'JSS': 'A. Junior Secondary School Census Form-uSw8GwPO417',
-            'PRY': 'A. Pre-primary and Primary School Census Form-MLTLNUmvS8r',
-            'PVT': 'A. Private School Census Form-pJydop5Fpsz',
-            'TVET': 'A. Science and Technical Colleges/ Vocational Education Census Form-XERITHzkeSI',
-            'SSS': 'A. Senior Secondary School Census Form-RlfDdEEZ317',
-        }
-
-        # Try to auto-select dataset based on school name prefix
-        default_index = 0
-        school_name = st.session_state.school_name or ""
-        auto_selected_name = None
-        for i, (prefix, dataset_name) in enumerate(prefix_map.items()):
-            if school_name.strip().upper().startswith(prefix):
-                # Find the dataset name in the options
-                for j, name in enumerate(dataset_options.keys()):
-                    if dataset_name in name:
-                        default_index = j
-                        auto_selected_name = name
-                        break
-                break
-
-        # Set session state for auto-selection if not already set
-        if dataset_options:
-            if 'dataset_select' not in st.session_state and auto_selected_name:
-                st.session_state['dataset_select'] = auto_selected_name
-                st.session_state['selected_dataset'] = dataset_options[auto_selected_name]
-            selected_dataset_name = st.selectbox(
-                "Dataset",
-                options=list(dataset_options.keys()),
-                key="dataset_select",
-                index=default_index
-            )
-            st.session_state.selected_dataset = dataset_options[selected_dataset_name]
-        
-        # Period selection
+        # Period selection (shared)
         current_year = datetime.now().year
         years = list(range(current_year - 5, current_year + 1))
         st.session_state.selected_period = st.selectbox(
@@ -162,33 +170,156 @@ def main_app():
             index=len(years)-1
         )
 
-        # Unsaved-change protection: detect dataset or period change while edits pending
-        _ds_changed = st.session_state.get('_last_dataset') != st.session_state.selected_dataset
-        _per_changed = st.session_state.get('_last_period') != str(st.session_state.selected_period)
-        if (_ds_changed or _per_changed) and st.session_state.edited_values:
-            st.warning("⚠️ You have unsaved edits. Switching dataset/period will discard them.")
-            col_keep, col_discard = st.columns(2)
-            with col_keep:
-                if st.button("Keep editing", key="nav_keep"):
-                    # Revert selectbox choices by restoring last known values
-                    st.session_state['dataset_select'] = next(
-                        (n for n, i in {ds['name']: ds['id'] for ds in load_datasets(
-                            st.session_state.username, st.session_state.password)}.items()
-                         if i == st.session_state.get('_last_dataset')), None)
-                    st.rerun()
-            with col_discard:
-                if st.button("Discard & switch", key="nav_discard", type="primary"):
-                    st.session_state.edited_values = {}
-                    st.session_state.compare_results = None
-                    st.session_state['show_push_review'] = False
-                    st.session_state['_last_dataset'] = st.session_state.selected_dataset
-                    st.session_state['_last_period'] = str(st.session_state.selected_period)
-                    st.rerun()
-        elif _ds_changed or _per_changed:
-            st.session_state.compare_results = None
-            st.session_state['show_push_review'] = False
-        st.session_state['_last_dataset'] = st.session_state.selected_dataset
-        st.session_state['_last_period'] = str(st.session_state.selected_period)
+        if st.session_state.data_mode == "Aggregate Forms":
+            st.subheader("Select Dataset")
+
+            datasets = load_datasets(st.session_state.username, st.session_state.password)
+            dataset_options = {ds['name']: ds['id'] for ds in datasets}
+
+            # Mapping from school type to dataset name substring
+            prefix_map = {
+                'IQS': 'A. Adult and Non Formal Education (IQS/IQTE) Census Form-W36yBpVEUkH',
+                'JSS': 'A. Junior Secondary School Census Form-uSw8GwPO417',
+                'PRY': 'A. Pre-primary and Primary School Census Form-MLTLNUmvS8r',
+                'PVT': 'A. Private School Census Form-pJydop5Fpsz',
+                'TVET': 'A. Science and Technical Colleges/ Vocational Education Census Form-XERITHzkeSI',
+                'SSS': 'A. Senior Secondary School Census Form-RlfDdEEZ317',
+            }
+
+            default_index = 0
+            auto_selected_name = None
+            school_name = (st.session_state.school_name or "").upper()
+            school_code = (st.session_state.school_code or "").upper()
+
+            for school_type, dataset_name in prefix_map.items():
+                name_tokens = school_name.split()
+                code_tokens = school_code.split()
+
+                if (school_name.startswith(school_type) or
+                    school_type in school_code or
+                    school_type in name_tokens or
+                    school_type in code_tokens):
+                    for j, name in enumerate(dataset_options.keys()):
+                        if dataset_name in name:
+                            default_index = j
+                            auto_selected_name = name
+                            break
+                    break
+
+            if dataset_options:
+                if 'dataset_select' not in st.session_state and auto_selected_name:
+                    st.session_state['dataset_select'] = auto_selected_name
+                    st.session_state['selected_dataset'] = dataset_options[auto_selected_name]
+                selected_dataset_name = st.selectbox(
+                    "Dataset",
+                    options=list(dataset_options.keys()),
+                    key="dataset_select",
+                    index=default_index
+                )
+                st.session_state.selected_dataset = dataset_options[selected_dataset_name]
+
+            # Unsaved-change protection: detect dataset or period change while edits pending
+            _ds_changed = st.session_state.get('_last_dataset') != st.session_state.selected_dataset
+            _per_changed = st.session_state.get('_last_period') != str(st.session_state.selected_period)
+            if (_ds_changed or _per_changed) and st.session_state.edited_values:
+                st.warning("⚠️ You have unsaved edits. Switching dataset/period will discard them.")
+                col_keep, col_discard = st.columns(2)
+                with col_keep:
+                    if st.button("Keep editing", key="nav_keep"):
+                        st.session_state['dataset_select'] = next(
+                            (n for n, i in {ds['name']: ds['id'] for ds in load_datasets(
+                                st.session_state.username, st.session_state.password)}.items()
+                             if i == st.session_state.get('_last_dataset')), None)
+                        st.rerun()
+                with col_discard:
+                    if st.button("Discard & switch", key="nav_discard", type="primary"):
+                        st.session_state.edited_values = {}
+                        st.session_state.compare_results = None
+                        st.session_state['show_push_review'] = False
+                        st.session_state['_last_dataset'] = st.session_state.selected_dataset
+                        st.session_state['_last_period'] = str(st.session_state.selected_period)
+                        st.rerun()
+            elif _ds_changed or _per_changed:
+                st.session_state.compare_results = None
+                st.session_state['show_push_review'] = False
+            st.session_state['_last_dataset'] = st.session_state.selected_dataset
+            st.session_state['_last_period'] = str(st.session_state.selected_period)
+
+        else:
+            st.subheader("Select Program Stage")
+            programs = load_programs(st.session_state.username, st.session_state.password)
+            program_options = {p['name']: p['id'] for p in programs}
+
+            if not program_options:
+                st.warning("No event programs available for this account.")
+            else:
+                selected_program_name = st.selectbox(
+                    "Program",
+                    options=list(program_options.keys()),
+                    key="program_select"
+                )
+                st.session_state.selected_program = program_options[selected_program_name]
+
+                stages = load_program_stages(
+                    st.session_state.selected_program,
+                    st.session_state.username,
+                    st.session_state.password
+                )
+                stage_options = {s['name']: s['id'] for s in stages}
+                if stage_options:
+                    selected_stage_name = st.selectbox(
+                        "Program Stage",
+                        options=list(stage_options.keys()),
+                        key="program_stage_select"
+                    )
+                    st.session_state.selected_program_stage = stage_options[selected_stage_name]
+
+            _prog_changed = st.session_state.get('_last_program') != st.session_state.selected_program
+            _stage_changed = st.session_state.get('_last_program_stage') != st.session_state.selected_program_stage
+            _per_changed = st.session_state.get('_last_period_events') != str(st.session_state.selected_period)
+
+            if (_prog_changed or _stage_changed or _per_changed) and st.session_state.get('event_has_unsaved_edits'):
+                st.warning("⚠️ You have unsaved event edits. Switching context will discard them.")
+                keep_col, discard_col = st.columns(2)
+                with keep_col:
+                    if st.button("Keep editing", key="events_nav_keep"):
+                        prev_program = st.session_state.get('_last_program')
+                        if prev_program:
+                            st.session_state['program_select'] = next(
+                                (n for n, i in program_options.items() if i == prev_program),
+                                st.session_state.get('program_select')
+                            )
+                            prev_stages = load_program_stages(
+                                prev_program,
+                                st.session_state.username,
+                                st.session_state.password
+                            )
+                            prev_stage_map = {s['name']: s['id'] for s in prev_stages}
+                            prev_stage = st.session_state.get('_last_program_stage')
+                            if prev_stage:
+                                st.session_state['program_stage_select'] = next(
+                                    (n for n, i in prev_stage_map.items() if i == prev_stage),
+                                    st.session_state.get('program_stage_select')
+                                )
+                        st.rerun()
+                with discard_col:
+                    if st.button("Discard & switch", key="events_nav_discard", type="primary"):
+                        st.session_state['event_show_review'] = False
+                        st.session_state['event_has_unsaved_edits'] = False
+                        st.session_state['events_editor_rev'] += 1
+                        st.session_state['_last_program'] = st.session_state.selected_program
+                        st.session_state['_last_program_stage'] = st.session_state.selected_program_stage
+                        st.session_state['_last_period_events'] = str(st.session_state.selected_period)
+                        load_events_data()
+                        st.rerun()
+            elif _prog_changed or _stage_changed or _per_changed:
+                st.session_state['event_show_review'] = False
+                st.session_state['event_has_unsaved_edits'] = False
+                st.session_state['_last_program'] = st.session_state.selected_program
+                st.session_state['_last_program_stage'] = st.session_state.selected_program_stage
+                st.session_state['_last_period_events'] = str(st.session_state.selected_period)
+                if st.session_state.selected_program and st.session_state.selected_program_stage:
+                    load_events_data()
 
         # Session expiry countdown
         if st.session_state.auth_expiry:
@@ -203,7 +334,7 @@ def main_app():
 
         st.markdown("---")
         if st.button("Logout", type="secondary"):
-            if st.session_state.edited_values:
+            if st.session_state.edited_values or st.session_state.get('event_has_unsaved_edits'):
                 st.session_state['pending_nav'] = 'logout'
             else:
                 logout()
@@ -224,6 +355,12 @@ def main_app():
                 st.session_state.edited_values = {}
                 st.session_state['pending_nav'] = None
                 logout()
+        return
+
+    if st.session_state.data_mode == "Events":
+        display_events_interface()
+        with st.expander("Sync History"):
+            display_sync_logs()
         return
 
     if not st.session_state.selected_dataset:
@@ -897,6 +1034,1451 @@ def display_sync_logs():
 
     except Exception as e:
         st.error(f"Failed to load sync logs: {e}")
+
+
+def load_events_data():
+    """Load event rows + stage element metadata for the selected program stage."""
+    if not st.session_state.selected_program or not st.session_state.selected_program_stage:
+        st.session_state.event_rows = []
+        st.session_state.event_element_specs = []
+        st.session_state.event_attr_specs = []
+        st.session_state.event_original_values = {}
+        st.session_state.event_meta = {}
+        st.session_state.event_program_meta = {}
+        st.session_state.event_attr_columns = []
+        st.session_state.event_attr_stats = {}
+        st.session_state.event_template_overrides = {}
+        return
+
+    year = str(st.session_state.selected_period)
+    start_date = f"{year}-01-01"
+    end_date = f"{year}-12-31"
+
+    elements = dhis2.get_program_stage_elements(
+        st.session_state.selected_program_stage,
+        st.session_state.username,
+        st.session_state.password
+    )
+    events = dhis2.get_events(
+        st.session_state.org_unit_uid,
+        st.session_state.selected_program,
+        st.session_state.selected_program_stage,
+        start_date,
+        end_date,
+        st.session_state.username,
+        st.session_state.password
+    )
+    enrollment_uids = list({ev.get('enrollment', '') for ev in events if ev.get('enrollment', '')})
+    enrollment_details = dhis2.get_enrollment_details(
+        enrollment_uids,
+        st.session_state.username,
+        st.session_state.password
+    )
+
+    program_attrs = dhis2.get_program_attributes(
+        st.session_state.selected_program,
+        st.session_state.username,
+        st.session_state.password
+    )
+    program_meta = dhis2.get_program_metadata(
+        st.session_state.selected_program,
+        st.session_state.username,
+        st.session_state.password
+    )
+    tei_uids = list({ev.get('trackedEntityInstance', '') for ev in events if ev.get('trackedEntityInstance', '')})
+    tei_attr_map = dhis2.get_tracked_entity_attribute_values(
+        tei_uids,
+        st.session_state.username,
+        st.session_state.password
+    )
+    enroll_attr_map = dhis2.get_program_enrollment_attribute_values(
+        st.session_state.org_unit_uid,
+        st.session_state.selected_program,
+        st.session_state.username,
+        st.session_state.password
+    )
+    enroll_attr_map_by_tei = dhis2.get_program_enrollment_attribute_values_by_tei(
+        tei_uids,
+        st.session_state.selected_program,
+        st.session_state.username,
+        st.session_state.password
+    )
+    program_tei_attr_map = dhis2.get_program_tracked_entity_attribute_values(
+        st.session_state.org_unit_uid,
+        st.session_state.selected_program,
+        st.session_state.username,
+        st.session_state.password
+    )
+    direct_hit_count = 0
+    bulk_enroll_hit_count = 0
+    per_tei_enroll_hit_count = 0
+    program_tei_hit_count = 0
+
+    # Merge fallback values from enrollments where direct TEI fetch is empty/missing.
+    for tei in tei_uids:
+        direct_vals = tei_attr_map.get(tei, {})
+        enroll_vals = enroll_attr_map.get(tei, {})
+        enroll_vals_by_tei = enroll_attr_map_by_tei.get(tei, {})
+        program_tei_vals = program_tei_attr_map.get(tei, {})
+        combined_enroll_vals = dict(enroll_vals)
+        combined_enroll_vals.update(enroll_vals_by_tei)
+        combined_enroll_vals.update(program_tei_vals)
+        if direct_vals:
+            direct_hit_count += 1
+        if enroll_vals:
+            bulk_enroll_hit_count += 1
+        if enroll_vals_by_tei:
+            per_tei_enroll_hit_count += 1
+        if program_tei_vals:
+            program_tei_hit_count += 1
+        if not direct_vals and combined_enroll_vals:
+            tei_attr_map[tei] = dict(combined_enroll_vals)
+        elif direct_vals and combined_enroll_vals:
+            merged = dict(combined_enroll_vals)
+            merged.update(direct_vals)
+            tei_attr_map[tei] = merged
+
+    attr_name_counts = {}
+    for a in program_attrs:
+        name = a.get('attrName', a.get('attrUID', 'Attribute'))
+        attr_name_counts[name] = attr_name_counts.get(name, 0) + 1
+
+    attr_specs = []
+    for a in program_attrs:
+        base_name = a.get('attrName', a.get('attrUID', 'Attribute'))
+        if attr_name_counts.get(base_name, 0) > 1:
+            col = f"Attr: {base_name} [{a.get('attrUID', '')[:6]}]"
+        else:
+            col = f"Attr: {base_name}"
+        attr_specs.append({
+            'attrUID': a.get('attrUID', ''),
+            'attrName': base_name,
+            'attrType': a.get('attrType', ''),
+            'mandatory': bool(a.get('mandatory', False)),
+            'column': col,
+        })
+
+    # Build stable, unique column labels for event value columns.
+    name_counts = {}
+    specs = []
+    for el in elements:
+        de_name = el.get('deName', el['deUID'])
+        name_counts[de_name] = name_counts.get(de_name, 0) + 1
+    for el in elements:
+        de_name = el.get('deName', el['deUID'])
+        if name_counts.get(de_name, 0) > 1:
+            column = f"{de_name} [{el['deUID'][:6]}]"
+        else:
+            column = de_name
+        specs.append({
+            'deUID': el['deUID'],
+            'deName': de_name,
+            'deType': el.get('deType', ''),
+            'column': column,
+        })
+
+    rows = []
+    original_values = {}
+    event_meta = {}
+    rows_with_attr_values = 0
+    for ev in events:
+        event_id = ev.get('event', '')
+        tei_uid = ev.get('trackedEntityInstance', '')
+        enrollment_id = ev.get('enrollment', '')
+        enrollment_date_raw = enrollment_details.get(enrollment_id, {}).get('enrollmentDate', '')
+        enrollment_date, _ = _normalize_event_date(enrollment_date_raw)
+        value_map = {
+            dv.get('dataElement', ''): str(dv.get('value', '') or '')
+            for dv in ev.get('dataValues', [])
+            if dv.get('dataElement', '')
+        }
+
+        row = {
+            'Template Row ID': event_id,
+            'Event ID': event_id,
+            'Person ID': tei_uid,
+            'Event Date': ev.get('eventDate', ''),
+            'Enrollment Date': enrollment_date,
+            'Status': ev.get('status', ''),
+        }
+        attr_values = tei_attr_map.get(tei_uid, {})
+        if attr_values:
+            rows_with_attr_values += 1
+        for a in attr_specs:
+            row[a['column']] = attr_values.get(a['attrUID'], '')
+        for spec in specs:
+            row[spec['column']] = value_map.get(spec['deUID'], '')
+        rows.append(row)
+
+        original_values[event_id] = {
+            spec['deUID']: value_map.get(spec['deUID'], '')
+            for spec in specs
+        }
+        event_meta[event_id] = {
+            'event': event_id,
+            'program': ev.get('program', st.session_state.selected_program),
+            'programStage': ev.get('programStage', st.session_state.selected_program_stage),
+            'orgUnit': ev.get('orgUnit', st.session_state.org_unit_uid),
+            'trackedEntityInstance': tei_uid,
+            'enrollment': enrollment_id,
+            'enrollmentDate': enrollment_date,
+            'eventDate': ev.get('eventDate', ''),
+            'status': ev.get('status', 'ACTIVE'),
+        }
+
+    st.session_state.event_rows = rows
+    st.session_state.event_element_specs = specs
+    st.session_state.event_attr_specs = attr_specs
+    st.session_state.event_original_values = original_values
+    st.session_state.event_meta = event_meta
+    st.session_state.event_program_meta = program_meta
+    st.session_state.event_attr_columns = [a['column'] for a in attr_specs]
+    st.session_state.event_attr_stats = {
+        'events': len(events),
+        'program_attributes': len(attr_specs),
+        'tei_ids': len(tei_uids),
+        'rows_with_values': rows_with_attr_values,
+        'direct_hits': direct_hit_count,
+        'bulk_enrollment_hits': bulk_enroll_hit_count,
+        'per_tei_enrollment_hits': per_tei_enroll_hit_count,
+        'program_tei_hits': program_tei_hit_count,
+    }
+    st.session_state.event_template_overrides = {}
+    st.session_state.event_show_review = False
+    st.session_state.event_has_unsaved_edits = False
+
+
+def _validate_event_changes(changes):
+    """Validate staged event changes against data element value types."""
+    clean, issues = [], []
+    for change in changes:
+        change_type = change.get('changeType', 'DATA_VALUE')
+        de_type = change.get('deType', '')
+        val = str(change.get('newValue', '')).strip()
+        issue = None
+
+        if change_type in ('EVENT_DATE', 'ENROLLMENT_DATE', 'CREATE_EVENT_DATE', 'CREATE_ENROLLMENT_DATE'):
+            normalized_date, parse_issue = _normalize_event_date(val)
+            if parse_issue:
+                issue = parse_issue
+            elif not normalized_date:
+                issue = 'Date value cannot be empty'
+            else:
+                change['newValue'] = normalized_date
+                val = normalized_date
+            if change_type == 'ENROLLMENT_DATE' and not str(change.get('enrollmentId', '') or '').strip():
+                issue = 'Missing enrollment ID for enrollment date update'
+
+        elif change_type == 'EVENT_STATUS':
+            if val.upper() not in ('ACTIVE', 'COMPLETED'):
+                issue = f"Status must be ACTIVE or COMPLETED (got '{val}')"
+            else:
+                change['newValue'] = val.upper()
+
+        elif val == '':
+            issue = 'Empty value will be skipped by DHIS2'
+        elif de_type in _NUMERIC_TYPES:
+            try:
+                num = float(val)
+                if de_type == 'INTEGER_POSITIVE' and num <= 0:
+                    issue = f"Must be > 0 (got {val})"
+                elif de_type == 'INTEGER_ZERO_OR_POSITIVE' and num < 0:
+                    issue = f"Must be ≥ 0 (got {val})"
+                elif de_type == 'INTEGER_NEGATIVE' and num >= 0:
+                    issue = f"Must be < 0 (got {val})"
+                elif de_type == 'UNIT_INTERVAL' and not (0 <= num <= 1):
+                    issue = f"Must be between 0 and 1 (got {val})"
+                elif de_type == 'PERCENTAGE' and not (0 <= num <= 100):
+                    issue = f"Must be between 0 and 100 (got {val})"
+                elif de_type in ('INTEGER', 'INTEGER_POSITIVE', 'INTEGER_NEGATIVE',
+                                 'INTEGER_ZERO_OR_POSITIVE') and num != int(num):
+                    issue = f"Must be a whole number (got {val})"
+            except ValueError:
+                issue = f"Expected a number (got '{val}')"
+        elif de_type in _BOOL_TYPES:
+            if val.lower() not in ('true', 'false', '1', '0', 'yes', 'no'):
+                issue = f"Expected true/false (got '{val}')"
+
+        if issue:
+            issues.append({
+                'Event ID': change.get('eventId', ''),
+                'Data Element': (
+                    'Event Date' if change_type in ('EVENT_DATE', 'CREATE_EVENT_DATE')
+                    else 'Enrollment Date' if change_type in ('ENROLLMENT_DATE', 'CREATE_ENROLLMENT_DATE')
+                    else change.get('deName', change.get('deUID', ''))
+                ),
+                'Value': val,
+                'Type': de_type,
+                'Issue': issue,
+            })
+        else:
+            clean.append(change)
+    return clean, issues
+
+
+def _normalize_event_date(value):
+    """Normalize event date input to YYYY-MM-DD for reliable comparison and push payloads."""
+    text = str(value or '').strip()
+    if not text:
+        return '', None
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', text):
+        return text, None
+    if re.fullmatch(r'\d{2}-\d{2}-\d{4}', text):
+        try:
+            return datetime.strptime(text, '%d-%m-%Y').date().isoformat(), None
+        except ValueError:
+            return '', f"Expected a valid calendar date (got '{text}')"
+
+    iso_text = text.replace('Z', '+00:00')
+    try:
+        dt = datetime.fromisoformat(iso_text)
+        return dt.date().isoformat(), None
+    except ValueError:
+        return '', f"Expected date in YYYY-MM-DD, DD-MM-YYYY, or ISO datetime format (got '{text}')"
+
+
+def _build_create_template_rows(attr_specs, element_specs, count=3):
+    """Append a few blank rows to support CSV/UI creation of new staff records."""
+    rows = []
+    for index in range(1, count + 1):
+        row = {
+            'Template Row ID': f'__NEW__{index}',
+            'Event ID': '',
+            'Person ID': '',
+            'Event Date': '',
+            'Enrollment Date': '',
+            'Status': 'ACTIVE',
+        }
+        for spec in attr_specs:
+            row[spec['column']] = ''
+        for spec in element_specs:
+            row[spec['column']] = ''
+        rows.append(row)
+    return rows
+
+
+def _row_has_create_values(row, attr_specs, element_specs):
+    for key in ('Event Date', 'Enrollment Date'):
+        if str(row.get(key, '') or '').strip():
+            return True
+    for spec in attr_specs:
+        if str(row.get(spec['column'], '') or '').strip():
+            return True
+    for spec in element_specs:
+        if str(row.get(spec['column'], '') or '').strip():
+            return True
+    return False
+
+
+def push_events_to_dhis2(changes):
+    """Push validated event data value changes to DHIS2."""
+    clean_changes, issues = _validate_event_changes(changes)
+    if issues:
+        st.warning(f"⚠️ {len(issues)} event value(s) failed validation and were removed from this push:")
+        st.dataframe(pd.DataFrame(issues), use_container_width=True, hide_index=True)
+    if not clean_changes:
+        st.error("No valid event changes to push.")
+        return False
+
+    create_changes = [c for c in clean_changes if str(c.get('changeType', '')).startswith('CREATE_')]
+    event_changes = [
+        c for c in clean_changes
+        if c.get('changeType') not in ('ENROLLMENT_DATE',) and not str(c.get('changeType', '')).startswith('CREATE_')
+    ]
+    enrollment_changes = [c for c in clean_changes if c.get('changeType') == 'ENROLLMENT_DATE']
+
+    grouped = {}
+    for change in event_changes:
+        event_id = change['eventId']
+        meta = st.session_state.event_meta.get(event_id, {})
+        if event_id not in grouped:
+            grouped[event_id] = {
+                'event': event_id,
+                'program': meta.get('program', st.session_state.selected_program),
+                'programStage': meta.get('programStage', st.session_state.selected_program_stage),
+                'orgUnit': meta.get('orgUnit', st.session_state.org_unit_uid),
+                'eventDate': meta.get('eventDate', ''),
+                'status': meta.get('status', 'ACTIVE'),
+                'dataValues': [],
+            }
+        if change.get('changeType') == 'EVENT_DATE':
+            grouped[event_id]['eventDate'] = str(change.get('newValue', '')).strip()
+        elif change.get('changeType') == 'EVENT_STATUS':
+            grouped[event_id]['status'] = str(change.get('newValue', '')).strip().upper()
+        else:
+            grouped[event_id]['dataValues'].append({
+                'dataElement': change['deUID'],
+                'value': str(change['newValue']).strip(),
+            })
+
+    updates = list(grouped.values())
+
+    enrollment_grouped = {}
+    for change in enrollment_changes:
+        enrollment_id = str(change.get('enrollmentId', '') or '').strip()
+        if not enrollment_id:
+            continue
+        event_id = change.get('eventId', '')
+        meta = st.session_state.event_meta.get(event_id, {})
+        enrollment_grouped[enrollment_id] = {
+            'enrollment': enrollment_id,
+            'program': meta.get('program', st.session_state.selected_program),
+            'orgUnit': meta.get('orgUnit', st.session_state.org_unit_uid),
+            'trackedEntityInstance': meta.get('trackedEntityInstance', ''),
+            'status': meta.get('status', 'ACTIVE'),
+            'enrollmentDate': str(change.get('newValue', '')).strip(),
+        }
+
+    enrollment_updates = list(enrollment_grouped.values())
+
+    create_groups = {}
+    for change in create_changes:
+        row_id = str(change.get('templateRowId', '') or '')
+        if not row_id:
+            continue
+        create_groups.setdefault(row_id, []).append(change)
+
+    create_issues = []
+    valid_create_groups = []
+    attr_spec_by_uid = {spec['attrUID']: spec for spec in st.session_state.get('event_attr_specs', [])}
+    program_meta = st.session_state.get('event_program_meta', {})
+    for row_id, row_changes in create_groups.items():
+        person_name = next((str(ch.get('personName', '') or '') for ch in row_changes if ch.get('personName')), '')
+        existing_person_id = next((str(ch.get('newValue', '') or '').strip() for ch in row_changes if ch.get('changeType') == 'CREATE_PERSON_ID'), '')
+        event_date = next((str(ch.get('newValue', '') or '') for ch in row_changes if ch.get('changeType') == 'CREATE_EVENT_DATE'), '')
+        enrollment_date = next((str(ch.get('newValue', '') or '') for ch in row_changes if ch.get('changeType') == 'CREATE_ENROLLMENT_DATE'), '')
+        attr_changes = [ch for ch in row_changes if ch.get('changeType') == 'CREATE_ATTRIBUTE']
+        data_value_changes = [ch for ch in row_changes if ch.get('changeType') == 'CREATE_DATA_VALUE']
+
+        missing_required = []
+        for spec in st.session_state.get('event_attr_specs', []):
+            if not spec.get('mandatory'):
+                continue
+            value = next((str(ch.get('newValue', '') or '').strip() for ch in attr_changes if ch.get('attrUID') == spec.get('attrUID')), '')
+            if not value:
+                missing_required.append(spec['attrName'])
+
+        if not existing_person_id:
+            if not program_meta.get('trackedEntityType'):
+                create_issues.append({'Event ID': '', 'Data Element': 'Program', 'Value': row_id, 'Type': 'CREATE', 'Issue': 'Program tracked entity type is missing'})
+                continue
+            if missing_required:
+                create_issues.append({'Event ID': '', 'Data Element': 'Attributes', 'Value': person_name or row_id, 'Type': 'CREATE', 'Issue': f"Missing required attributes: {', '.join(missing_required)}"})
+                continue
+        if not enrollment_date:
+            create_issues.append({'Event ID': '', 'Data Element': 'Enrollment Date', 'Value': person_name or row_id, 'Type': 'CREATE', 'Issue': 'Enrollment Date is required for new rows'})
+            continue
+        if not event_date:
+            create_issues.append({'Event ID': '', 'Data Element': 'Event Date', 'Value': person_name or row_id, 'Type': 'CREATE', 'Issue': 'Event Date is required for new rows'})
+            continue
+        if not data_value_changes:
+            create_issues.append({'Event ID': '', 'Data Element': 'Stage Fields', 'Value': person_name or row_id, 'Type': 'CREATE', 'Issue': 'At least one stage field is required for a new event'})
+            continue
+
+        valid_create_groups.append({
+            'rowId': row_id,
+            'personName': person_name,
+            'personId': existing_person_id,
+            'eventDate': event_date,
+            'enrollmentDate': enrollment_date,
+            'attributes': [
+                {
+                    'attribute': ch['attrUID'],
+                    'value': str(ch.get('newValue', '')).strip(),
+                }
+                for ch in attr_changes if str(ch.get('newValue', '')).strip()
+            ],
+            'dataValues': [
+                {
+                    'dataElement': ch['deUID'],
+                    'value': str(ch.get('newValue', '')).strip(),
+                }
+                for ch in data_value_changes if str(ch.get('newValue', '')).strip()
+            ],
+        })
+
+    if create_issues:
+        st.warning(f"⚠️ {len(create_issues)} new-row issue(s) were found and those rows were skipped:")
+        st.dataframe(pd.DataFrame(create_issues), use_container_width=True, hide_index=True)
+
+    try:
+        result = {'status': 'SUCCESS', 'message': '', 'response': {'importCount': {'imported': 0, 'updated': 0, 'ignored': 0}}}
+        if updates:
+            result = dhis2.push_event_updates(
+                updates,
+                st.session_state.username,
+                st.session_state.password
+            )
+
+        enrollment_result = {'status': 'SUCCESS', 'message': '', 'response': {'importCount': {'imported': 0, 'updated': 0, 'ignored': 0}}}
+        if enrollment_updates:
+            enrollment_result = dhis2.push_enrollment_updates(
+                enrollment_updates,
+                st.session_state.username,
+                st.session_state.password
+            )
+
+        created_rows = 0
+        unverified_created_rows = 0
+        for create_group in valid_create_groups:
+            tei_uid = str(create_group.get('personId', '') or '').strip()
+            person_label = create_group['personName'] or create_group['rowId']
+
+            # ── If TEI already exists, resolve enrollment then create event only ──
+            if tei_uid:
+                existing_enrollment_uid = dhis2.get_existing_enrollment_for_tei(
+                    st.session_state.selected_program,
+                    tei_uid,
+                    st.session_state.org_unit_uid,
+                    st.session_state.username,
+                    st.session_state.password
+                )
+                if existing_enrollment_uid:
+                    # Only create the event under the existing enrollment
+                    try:
+                        event_result_create = dhis2.create_event(
+                            st.session_state.selected_program,
+                            st.session_state.selected_program_stage,
+                            tei_uid,
+                            existing_enrollment_uid,
+                            st.session_state.org_unit_uid,
+                            create_group['eventDate'],
+                            create_group['dataValues'],
+                            st.session_state.username,
+                            st.session_state.password
+                        )
+                        event_uid = dhis2._extract_import_reference(event_result_create)
+                    except Exception as ev_exc:
+                        import requests as _req
+                        event_uid = ''
+                        is_timeout = isinstance(ev_exc, _req.exceptions.Timeout)
+                        if is_timeout:
+                            unverified_created_rows += 1
+                            created_rows += 1
+                            st.warning(f"Event create not verifiable yet for {person_label} (timeout).")
+                            continue
+                        raise ValueError(f"Failed to create event for {person_label}: {ev_exc}")
+                    if not event_uid:
+                        raise ValueError(f"Failed to create event for {person_label}: no event UID returned")
+                    created_rows += 1
+                    continue
+                # No existing enrollment — fall through to create enrollment + event below
+
+            # ── Try new single-call /tracker bundle (TEI + enrollment + event) ──
+            bundle_result = dhis2.create_tracker_bundle(
+                tracked_entity_type_uid=program_meta.get('trackedEntityType', ''),
+                program_uid=st.session_state.selected_program,
+                program_stage_uid=st.session_state.selected_program_stage,
+                org_unit_uid=st.session_state.org_unit_uid,
+                enrollment_date=create_group['enrollmentDate'],
+                event_date=create_group['eventDate'],
+                attributes=create_group['attributes'],
+                data_values=create_group['dataValues'],
+                username=st.session_state.username,
+                password=st.session_state.password,
+                existing_tei_uid='',  # Always create full bundle here (TEI is new or has no enrollment)
+            )
+
+            if bundle_result['status'] == 'NOT_FOUND':
+                bundle_result = None  # Server doesn't support /tracker — use old flow below
+            elif bundle_result['status'] in ('OK', 'WARNING'):
+                if bundle_result['errors']:
+                    st.warning(f"⚠️ {person_label}: {'; '.join(bundle_result['errors'][:3])}")
+                created_rows += 1
+                continue
+            else:
+                bundle_result = None  # /tracker returned error — fall back to old flow
+
+            # ── Fallback: old sequential flow (/trackedEntityInstances → /enrollments → /events) ──
+            if not tei_uid:
+                tei_result = dhis2.create_tracked_entity_instance(
+                    program_meta.get('trackedEntityType', ''),
+                    st.session_state.org_unit_uid,
+                    create_group['attributes'],
+                    st.session_state.username,
+                    st.session_state.password
+                )
+                tei_uid = dhis2._extract_import_reference(tei_result)
+                if not tei_uid:
+                    raise ValueError(f"Failed to create tracked entity for {person_label}")
+
+            try:
+                enrollment_result_create = dhis2.create_enrollment(
+                    st.session_state.selected_program,
+                    tei_uid,
+                    st.session_state.org_unit_uid,
+                    create_group['enrollmentDate'],
+                    create_group['enrollmentDate'],
+                    st.session_state.username,
+                    st.session_state.password
+                )
+                enrollment_uid = dhis2._extract_import_reference(enrollment_result_create)
+            except Exception:
+                enrollment_uid = ''
+            if not enrollment_uid:
+                enrollment_uid = dhis2.get_existing_enrollment_for_tei(
+                    st.session_state.selected_program,
+                    tei_uid,
+                    st.session_state.org_unit_uid,
+                    st.session_state.username,
+                    st.session_state.password
+                )
+            if not enrollment_uid:
+                raise ValueError(f"Failed to create or resolve enrollment for {person_label}")
+
+            try:
+                event_result_create = dhis2.create_event(
+                    st.session_state.selected_program,
+                    st.session_state.selected_program_stage,
+                    tei_uid,
+                    enrollment_uid,
+                    st.session_state.org_unit_uid,
+                    create_group['eventDate'],
+                    create_group['dataValues'],
+                    st.session_state.username,
+                    st.session_state.password
+                )
+                event_uid = dhis2._extract_import_reference(event_result_create)
+                create_event_error = None
+            except Exception as create_ev_exc:
+                import requests as _req
+                event_uid = ''
+                is_timeout = isinstance(create_ev_exc, _req.exceptions.Timeout)
+                create_event_error = ('Request timed out — DHIS2 may still have created the event. ' if is_timeout else '') + str(create_ev_exc)
+            lookup_error = ''
+            if not event_uid:
+                try:
+                    event_uid = dhis2.get_existing_event_for_enrollment(
+                        st.session_state.selected_program_stage,
+                        enrollment_uid,
+                        st.session_state.username,
+                        st.session_state.password
+                    )
+                except Exception as verify_exc:
+                    event_uid = ''
+                    lookup_error = str(verify_exc)
+            if not event_uid:
+                transient_error_text = f"{create_event_error or ''} {lookup_error or ''}".lower()
+                is_transient = (
+                    'timed out' in transient_error_text
+                    or 'timeout' in transient_error_text
+                    or '504' in transient_error_text
+                    or 'gateway time-out' in transient_error_text
+                    or 'gateway timeout' in transient_error_text
+                )
+                if is_transient:
+                    unverified_created_rows += 1
+                    created_rows += 1
+                    st.warning(
+                        f"Event create not verifiable yet for {person_label} due to a temporary server timeout (504)."
+                    )
+                    continue
+                details = [d for d in (create_event_error, lookup_error) if d]
+                detail = f": {' | '.join(details)}" if details else ""
+                raise ValueError(f"Failed to create event for {person_label}{detail}")
+            created_rows += 1
+
+        response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
+        imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
+        import_count = imp.get('importCount', {}) if isinstance(imp, dict) else {}
+        imported = int(import_count.get('imported', 0) or 0)
+        updated = int(import_count.get('updated', 0) or 0)
+        ignored = int(import_count.get('ignored', 0) or 0)
+        status = imp.get('status', result.get('status', 'UNKNOWN')) if isinstance(imp, dict) else result.get('status', 'UNKNOWN')
+        message = ''
+        if isinstance(imp, dict):
+            message = imp.get('description', '') or imp.get('message', '') or ''
+        if not message:
+            message = result.get('message', '') or result.get('description', '') or ''
+
+        # Fallback parsing for event import summaries if importCount is missing.
+        if imported == 0 and updated == 0 and ignored == 0:
+            summaries = result.get('importSummaries', [])
+            if isinstance(summaries, list) and summaries:
+                ignored = sum(1 for s in summaries if str(s.get('status', '')).upper() == 'ERROR')
+                updated = len(summaries) - ignored
+
+        enrollment_response = enrollment_result.get('response', {}) if isinstance(enrollment_result.get('response', {}), dict) else {}
+        enrollment_imp = enrollment_result.get('importSummary') or enrollment_response.get('importSummary') or enrollment_response or enrollment_result
+        enrollment_count = enrollment_imp.get('importCount', {}) if isinstance(enrollment_imp, dict) else {}
+        enrollment_updated = int(enrollment_count.get('updated', 0) or 0)
+        enrollment_ignored = int(enrollment_count.get('ignored', 0) or 0)
+
+        total_updated = updated + enrollment_updated + created_rows
+        total_ignored = ignored + enrollment_ignored
+        final_status = status if str(status).upper() not in ('SUCCESS', 'OK') else enrollment_imp.get('status', status) if isinstance(enrollment_imp, dict) else status
+
+        db.log_sync(
+            st.session_state.org_unit_uid,
+            f"EVENTS:{st.session_state.selected_program_stage}",
+            str(st.session_state.selected_period),
+            len(clean_changes),
+            imported,
+            total_updated,
+            total_ignored,
+            final_status,
+            message,
+            ''
+        )
+
+        if str(final_status).upper() in ('SUCCESS', 'OK') and total_ignored == 0:
+            st.success(
+                "✅ Events synced successfully. "
+                f"Updated events: {len(updates)}, updated enrollments: {len(enrollment_updates)}, created staff rows: {created_rows}"
+            )
+            if unverified_created_rows > 0:
+                st.warning(
+                    f"{unverified_created_rows} newly created row(s) could not be verified immediately because DHIS2 returned timeout/504 on verification."
+                )
+            return True
+
+        st.warning(f"⚠️ Event sync completed with warnings: {final_status}")
+        st.info(f"Updated: {total_updated}, Ignored: {total_ignored}")
+        return False
+    except Exception as e:
+        db.log_sync(
+            st.session_state.org_unit_uid,
+            f"EVENTS:{st.session_state.selected_program_stage}",
+            str(st.session_state.selected_period),
+            len(clean_changes),
+            0,
+            0,
+            len(clean_changes),
+            'ERROR',
+            str(e),
+            ''
+        )
+        st.error(f"Sync failed: {e}")
+        return False
+
+
+def display_events_interface():
+    """Display event data table, edit review, and push flow."""
+    st.subheader("Events Data Entry")
+
+    if not st.session_state.selected_program or not st.session_state.selected_program_stage:
+        st.info("Select a Program and Program Stage in the sidebar to fetch events.")
+        return
+
+    top_left, top_right = st.columns([1, 4])
+    with top_left:
+        if st.button("Refresh Events", key="refresh_events", type="primary"):
+            with st.spinner("Loading events from DHIS2..."):
+                load_events_data()
+                st.session_state['events_editor_rev'] += 1
+                st.rerun()
+
+    if not st.session_state.event_rows:
+        st.info("No existing events found for this school, program stage, and period. You can still create new staff enrollment/event rows below.")
+
+    attr_stats = st.session_state.get('event_attr_stats', {})
+    if st.session_state.get('event_attr_columns'):
+        st.caption(
+            f"Program attributes loaded: {attr_stats.get('program_attributes', 0)} · "
+            f"events: {attr_stats.get('events', 0)} · "
+            f"persons: {attr_stats.get('tei_ids', 0)} · "
+            f"rows with attribute values: {attr_stats.get('rows_with_values', 0)} · "
+            f"direct TEI hits: {attr_stats.get('direct_hits', 0)} · "
+            f"bulk enrollment hits: {attr_stats.get('bulk_enrollment_hits', 0)} · "
+            f"per-TEI enrollment hits: {attr_stats.get('per_tei_enrollment_hits', 0)} · "
+            f"program TEI hits: {attr_stats.get('program_tei_hits', 0)}"
+        )
+
+    st.markdown("---")
+    st.subheader("Events Template Export/Import")
+
+    specs = st.session_state.event_element_specs
+    attr_specs = st.session_state.get('event_attr_specs', [])
+    column_to_spec = {s['column']: s for s in specs}
+    stage_columns = [s['column'] for s in specs]
+    attr_columns = [s['column'] for s in attr_specs]
+    template_editable_columns = attr_columns + stage_columns + ['Person ID', 'Event Date', 'Enrollment Date']
+
+    # Build working table and apply any imported template overrides.
+    df = pd.DataFrame(st.session_state.event_rows + _build_create_template_rows(attr_specs, specs))
+    overrides = st.session_state.get('event_template_overrides', {})
+    if overrides:
+        for idx in df.index:
+            row_id = str(df.at[idx, 'Template Row ID'])
+            row_overrides = overrides.get(row_id, {})
+            for col_name, value in row_overrides.items():
+                if col_name in df.columns:
+                    df.at[idx, col_name] = value
+
+    tcol1, tcol2, tcol3 = st.columns([1, 1, 2])
+    with tcol1:
+        if st.button("Download Events Template (CSV)", key="download_events_template"):
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Events CSV",
+                data=csv,
+                file_name=f"events_template_{st.session_state.school_code or 'school'}_{st.session_state.selected_period}.csv",
+                mime='text/csv',
+                key="download_events_template_file"
+            )
+    with tcol2:
+        uploaded_events_file = st.file_uploader(
+            "Upload Events Template (CSV)",
+            type=["csv"],
+            key="events_template_upload"
+        )
+        if uploaded_events_file is not None:
+            try:
+                current_upload_sig = f"{uploaded_events_file.name}:{uploaded_events_file.size}"
+                if current_upload_sig == st.session_state.get('event_last_uploaded_template_sig', ''):
+                    st.caption("Uploaded template already applied.")
+                    imported_df = None
+                else:
+                    imported_df = pd.read_csv(uploaded_events_file, dtype=str)
+                    st.session_state['event_last_uploaded_template_sig'] = current_upload_sig
+
+                if imported_df is None:
+                    pass
+                elif 'Template Row ID' not in imported_df.columns:
+                    st.error("CSV missing required column: Template Row ID")
+                else:
+                    valid_event_ids = {str(r.get('Event ID', '')) for r in st.session_state.event_rows if str(r.get('Event ID', '')).strip()}
+                    valid_row_ids = {str(r.get('Template Row ID', '')) for _, r in df.iterrows()}
+                    imported_editable_cols = [c for c in imported_df.columns if c in template_editable_columns]
+                    imported_stage_cols = [c for c in imported_editable_cols if c in stage_columns]
+                    has_event_date_col = 'Event Date' in imported_editable_cols
+                    has_enrollment_date_col = 'Enrollment Date' in imported_editable_cols
+                    if not imported_editable_cols:
+                        st.error("CSV contains no editable stage/date columns for this selected program stage.")
+                    else:
+                        new_overrides = {}
+                        skipped_unknown_events = 0
+                        non_stage_changes = 0
+                        invalid_event_date_rows = 0
+                        invalid_enrollment_date_rows = 0
+                        original_values = st.session_state.event_original_values
+                        current_row_map = {
+                            str(row.get('Template Row ID', '') or ''): row
+                            for _, row in df.iterrows()
+                        }
+                        non_stage_cols = [
+                            c for c in imported_df.columns
+                            if c not in imported_editable_cols and c != 'Event ID'
+                        ]
+                        for _, csv_row in imported_df.iterrows():
+                            row_id = str(csv_row.get('Template Row ID', '') or '').strip()
+                            event_id = str(csv_row.get('Event ID', '') or '').strip()
+                            if not row_id:
+                                continue
+                            if row_id not in valid_row_ids:
+                                skipped_unknown_events += 1
+                                continue
+
+                            is_create_row = str(row_id).startswith('__NEW__')
+                            current_row = current_row_map.get(row_id)
+                            if current_row is not None:
+                                for col_name in non_stage_cols:
+                                    if col_name not in current_row.index:
+                                        continue
+                                    raw_non_stage = csv_row.get(col_name, '')
+                                    val_non_stage = '' if pd.isna(raw_non_stage) else str(raw_non_stage).strip()
+                                    cur_non_stage = str(current_row.get(col_name, '') or '').strip()
+                                    if val_non_stage != cur_non_stage:
+                                        non_stage_changes += 1
+
+                            if is_create_row and not _row_has_create_values(csv_row, attr_specs, specs):
+                                continue
+
+                            if is_create_row:
+                                person_id_csv = str(csv_row.get('Person ID', '') or '').strip()
+                                if person_id_csv:
+                                    new_overrides.setdefault(row_id, {})['Person ID'] = person_id_csv
+                                for col_name in attr_columns:
+                                    raw_val = csv_row.get(col_name, '')
+                                    val = '' if pd.isna(raw_val) else str(raw_val).strip()
+                                    if val:
+                                        new_overrides.setdefault(row_id, {})[col_name] = val
+                                for col_name in imported_stage_cols:
+                                    raw_val = csv_row.get(col_name, '')
+                                    val = '' if pd.isna(raw_val) else str(raw_val).strip()
+                                    if val:
+                                        new_overrides.setdefault(row_id, {})[col_name] = val
+                                if has_event_date_col:
+                                    raw_date = csv_row.get('Event Date', '')
+                                    new_date_raw = '' if pd.isna(raw_date) else str(raw_date).strip()
+                                    if new_date_raw:
+                                        new_date, parse_issue = _normalize_event_date(new_date_raw)
+                                        if parse_issue:
+                                            invalid_event_date_rows += 1
+                                        else:
+                                            new_overrides.setdefault(row_id, {})['Event Date'] = new_date
+                                if has_enrollment_date_col:
+                                    raw_enrollment_date = csv_row.get('Enrollment Date', '')
+                                    new_enrollment_date_raw = '' if pd.isna(raw_enrollment_date) else str(raw_enrollment_date).strip()
+                                    if new_enrollment_date_raw:
+                                        new_enrollment_date, parse_issue = _normalize_event_date(new_enrollment_date_raw)
+                                        if parse_issue:
+                                            invalid_enrollment_date_rows += 1
+                                        else:
+                                            new_overrides.setdefault(row_id, {})['Enrollment Date'] = new_enrollment_date
+                                continue
+
+                            if event_id not in valid_event_ids:
+                                skipped_unknown_events += 1
+                                continue
+
+                            original_for_event = original_values.get(event_id, {})
+                            for col_name in imported_stage_cols:
+                                raw_val = csv_row.get(col_name, '')
+                                val = '' if pd.isna(raw_val) else str(raw_val).strip()
+                                spec = column_to_spec.get(col_name)
+                                if not spec:
+                                    continue
+                                old_val = str(original_for_event.get(spec['deUID'], '') or '').strip()
+                                if val != old_val:
+                                    if row_id not in new_overrides:
+                                        new_overrides[row_id] = {}
+                                    new_overrides[row_id][col_name] = val
+
+                            if has_event_date_col:
+                                raw_date = csv_row.get('Event Date', '')
+                                new_date_raw = '' if pd.isna(raw_date) else str(raw_date).strip()
+                                old_date_raw = st.session_state.event_meta.get(event_id, {}).get('eventDate', '')
+                                old_date, _ = _normalize_event_date(old_date_raw)
+                                new_date, parse_issue = _normalize_event_date(new_date_raw)
+                                if parse_issue:
+                                    invalid_event_date_rows += 1
+                                    continue
+                                if new_date != old_date:
+                                    if row_id not in new_overrides:
+                                        new_overrides[row_id] = {}
+                                    new_overrides[row_id]['Event Date'] = new_date
+
+                            if has_enrollment_date_col:
+                                raw_enrollment_date = csv_row.get('Enrollment Date', '')
+                                new_enrollment_date_raw = '' if pd.isna(raw_enrollment_date) else str(raw_enrollment_date).strip()
+                                old_enrollment_date_raw = st.session_state.event_meta.get(event_id, {}).get('enrollmentDate', '')
+                                old_enrollment_date, _ = _normalize_event_date(old_enrollment_date_raw)
+                                new_enrollment_date, parse_issue = _normalize_event_date(new_enrollment_date_raw)
+                                if parse_issue:
+                                    invalid_enrollment_date_rows += 1
+                                    continue
+                                if new_enrollment_date != old_enrollment_date:
+                                    if row_id not in new_overrides:
+                                        new_overrides[row_id] = {}
+                                    new_overrides[row_id]['Enrollment Date'] = new_enrollment_date
+
+                        st.session_state.event_template_overrides = new_overrides
+                        st.session_state.event_show_review = False
+                        st.session_state.events_editor_rev += 1
+                        if new_overrides:
+                            changed_cells = sum(len(v) for v in new_overrides.values())
+                            st.success(
+                                f"Loaded template values for {len(new_overrides)} event(s), {changed_cells} changed field(s)."
+                                + (f" Skipped {skipped_unknown_events} unknown event row(s)." if skipped_unknown_events else "")
+                            )
+                            if invalid_event_date_rows:
+                                st.warning(
+                                    f"Skipped {invalid_event_date_rows} row(s) with invalid Event Date format. "
+                                    "Use YYYY-MM-DD or ISO datetime."
+                                )
+                            if invalid_enrollment_date_rows:
+                                st.warning(
+                                    f"Skipped {invalid_enrollment_date_rows} row(s) with invalid Enrollment Date format. "
+                                    "Use YYYY-MM-DD or ISO datetime."
+                                )
+                            st.rerun()
+                        else:
+                            if non_stage_changes > 0:
+                                st.warning(
+                                    "No postable stage-field changes detected. It looks like only identification/attribute columns "
+                                    "were edited, and those are not pushed in Event update payloads."
+                                )
+                            elif invalid_event_date_rows:
+                                st.warning(
+                                    "No changes were loaded because Event Date format was invalid. "
+                                    "Use YYYY-MM-DD or ISO datetime."
+                                )
+                            elif invalid_enrollment_date_rows:
+                                st.warning(
+                                    "No changes were loaded because Enrollment Date format was invalid. "
+                                    "Use YYYY-MM-DD or ISO datetime."
+                                )
+                            else:
+                                st.info("No changes detected from uploaded template.")
+            except Exception as e:
+                st.error(f"Failed to process uploaded Events CSV: {e}")
+    with tcol3:
+        st.info(
+            "Download the school events template, edit existing rows to update records, or fill the blank __NEW__ rows "
+            "to create new staff, enrollment, and first event for this school."
+        )
+
+    st.markdown("---")
+    editor_key = f"events_editor_{st.session_state.get('events_editor_rev', 0)}"
+    disabled_cols = ['Template Row ID', 'Event ID', 'Person ID']
+    edited_df = st.data_editor(
+        df,
+        key=editor_key,
+        disabled=disabled_cols,
+        column_config={
+            'Status': st.column_config.SelectboxColumn(
+                'Status',
+                options=['ACTIVE', 'COMPLETED'],
+                required=False,
+            )
+        },
+        use_container_width=True,
+        hide_index=True,
+        num_rows='fixed'
+    )
+
+    changes = []
+    original_values = st.session_state.event_original_values
+    event_attr_cols = st.session_state.get('event_attr_columns', [])
+    attr_specs = st.session_state.get('event_attr_specs', [])
+    name_col = next((c for c in event_attr_cols if 'name' in c.lower()), '')
+    for _, row in edited_df.iterrows():
+        row_id = str(row.get('Template Row ID', '') or '').strip()
+        event_id = row.get('Event ID', '')
+        if not row_id:
+            continue
+        person_id_raw = row.get('Person ID', '')
+        person_id = '' if (pd.isna(person_id_raw) if not isinstance(person_id_raw, str) else person_id_raw.strip() in ('', 'nan')) else str(person_id_raw).strip()
+        if person_id == 'nan':
+            person_id = ''
+        person_name_raw = row.get(name_col, '') if name_col else ''
+        person_name = '' if (pd.isna(person_name_raw) if not isinstance(person_name_raw, str) else False) else str(person_name_raw or '').strip()
+        is_create_row = row_id.startswith('__NEW__')
+
+        if is_create_row:
+            if not _row_has_create_values(row, attr_specs, specs):
+                continue
+
+            if person_id:
+                changes.append({
+                    'templateRowId': row_id,
+                    'eventId': '',
+                    'personId': person_id,
+                    'personName': person_name,
+                    'eventDate': '',
+                    'templateField': 'Person ID',
+                    'deUID': '__CREATE_PERSON_ID__',
+                    'deName': 'Person ID',
+                    'deType': 'TEXT',
+                    'oldValue': '',
+                    'newValue': person_id,
+                    'changeType': 'CREATE_PERSON_ID',
+                    'operation': 'CREATE',
+                })
+
+            new_event_date_raw = row.get('Event Date', '')
+            new_event_date = '' if pd.isna(new_event_date_raw) else str(new_event_date_raw).strip()
+            new_event_date_norm, _ = _normalize_event_date(new_event_date)
+            if new_event_date_norm:
+                changes.append({
+                    'templateRowId': row_id,
+                    'eventId': '',
+                    'personId': person_id,
+                    'personName': person_name,
+                    'eventDate': new_event_date_norm,
+                    'templateField': 'Event Date',
+                    'deUID': '__CREATE_EVENT_DATE__',
+                    'deName': 'Event Date',
+                    'deType': 'DATE',
+                    'oldValue': '',
+                    'newValue': new_event_date_norm,
+                    'changeType': 'CREATE_EVENT_DATE',
+                    'operation': 'CREATE',
+                })
+
+            new_enrollment_date_raw = row.get('Enrollment Date', '')
+            new_enrollment_date = '' if pd.isna(new_enrollment_date_raw) else str(new_enrollment_date_raw).strip()
+            new_enrollment_date_norm, _ = _normalize_event_date(new_enrollment_date)
+            if new_enrollment_date_norm:
+                changes.append({
+                    'templateRowId': row_id,
+                    'eventId': '',
+                    'personId': person_id,
+                    'personName': person_name,
+                    'eventDate': new_event_date_norm,
+                    'templateField': 'Enrollment Date',
+                    'deUID': '__CREATE_ENROLLMENT_DATE__',
+                    'deName': 'Enrollment Date',
+                    'deType': 'DATE',
+                    'oldValue': '',
+                    'newValue': new_enrollment_date_norm,
+                    'changeType': 'CREATE_ENROLLMENT_DATE',
+                    'operation': 'CREATE',
+                })
+
+            for attr_spec in attr_specs:
+                new_raw = row.get(attr_spec['column'], '')
+                new_val = '' if pd.isna(new_raw) else str(new_raw).strip()
+                if new_val:
+                    changes.append({
+                        'templateRowId': row_id,
+                        'eventId': '',
+                        'personId': person_id,
+                        'personName': person_name,
+                        'eventDate': new_event_date_norm,
+                        'templateField': attr_spec['column'],
+                        'attrUID': attr_spec['attrUID'],
+                        'deUID': attr_spec['attrUID'],
+                        'deName': attr_spec['attrName'],
+                        'deType': attr_spec.get('attrType', ''),
+                        'oldValue': '',
+                        'newValue': new_val,
+                        'changeType': 'CREATE_ATTRIBUTE',
+                        'operation': 'CREATE',
+                    })
+
+            for col_name, spec in column_to_spec.items():
+                new_raw = row.get(col_name, '')
+                new_val = '' if pd.isna(new_raw) else str(new_raw).strip()
+                if new_val:
+                    changes.append({
+                        'templateRowId': row_id,
+                        'eventId': '',
+                        'personId': person_id,
+                        'personName': person_name,
+                        'eventDate': new_event_date_norm,
+                        'templateField': col_name,
+                        'deUID': spec['deUID'],
+                        'deName': spec['deName'],
+                        'deType': spec.get('deType', ''),
+                        'oldValue': '',
+                        'newValue': new_val,
+                        'changeType': 'CREATE_DATA_VALUE',
+                        'operation': 'CREATE',
+                    })
+            continue
+
+        if not event_id:
+            continue
+        original_for_event = original_values.get(event_id, {})
+        enrollment_id = str(st.session_state.event_meta.get(event_id, {}).get('enrollment', '') or '')
+
+        old_event_date_raw = st.session_state.event_meta.get(event_id, {}).get('eventDate', '')
+        old_event_date, _ = _normalize_event_date(old_event_date_raw)
+        new_event_date_raw = row.get('Event Date', '')
+        new_event_date = '' if pd.isna(new_event_date_raw) else str(new_event_date_raw).strip()
+        new_event_date_norm, _ = _normalize_event_date(new_event_date)
+        if new_event_date_norm != old_event_date:
+            changes.append({
+                'eventId': event_id,
+                'templateRowId': row_id,
+                'personId': person_id,
+                'personName': person_name,
+                'enrollmentId': enrollment_id,
+                'eventDate': new_event_date_norm,
+                'templateField': 'Event Date',
+                'deUID': '__EVENT_DATE__',
+                'deName': 'Event Date',
+                'deType': 'DATE',
+                'oldValue': old_event_date,
+                'newValue': new_event_date_norm,
+                'changeType': 'EVENT_DATE',
+                'operation': 'UPDATE',
+            })
+
+        old_enrollment_date_raw = st.session_state.event_meta.get(event_id, {}).get('enrollmentDate', '')
+        old_enrollment_date, _ = _normalize_event_date(old_enrollment_date_raw)
+        new_enrollment_date_raw = row.get('Enrollment Date', '')
+        new_enrollment_date = '' if pd.isna(new_enrollment_date_raw) else str(new_enrollment_date_raw).strip()
+        new_enrollment_date_norm, _ = _normalize_event_date(new_enrollment_date)
+        if new_enrollment_date_norm != old_enrollment_date:
+            changes.append({
+                'eventId': event_id,
+                'personId': person_id,
+                'personName': person_name,
+                'enrollmentId': enrollment_id,
+                'eventDate': row.get('Event Date', ''),
+                'templateField': 'Enrollment Date',
+                'deUID': '__ENROLLMENT_DATE__',
+                'deName': 'Enrollment Date',
+                'deType': 'DATE',
+                'oldValue': old_enrollment_date,
+                'newValue': new_enrollment_date_norm,
+                'changeType': 'ENROLLMENT_DATE',
+                'operation': 'UPDATE',
+            })
+
+        old_status = str(st.session_state.event_meta.get(event_id, {}).get('status', 'ACTIVE') or 'ACTIVE').upper()
+        new_status_raw = row.get('Status', '')
+        new_status = '' if pd.isna(new_status_raw) else str(new_status_raw).strip().upper()
+        if new_status in ('ACTIVE', 'COMPLETED') and new_status != old_status:
+            changes.append({
+                'eventId': event_id,
+                'templateRowId': row_id,
+                'personId': person_id,
+                'personName': person_name,
+                'enrollmentId': enrollment_id,
+                'eventDate': row.get('Event Date', ''),
+                'templateField': 'Status',
+                'deUID': '__EVENT_STATUS__',
+                'deName': 'Status',
+                'deType': 'TEXT',
+                'oldValue': old_status,
+                'newValue': new_status,
+                'changeType': 'EVENT_STATUS',
+                'operation': 'UPDATE',
+            })
+
+        for col_name, spec in column_to_spec.items():
+            new_raw = row.get(col_name, '')
+            new_val = '' if pd.isna(new_raw) else str(new_raw).strip()
+            old_val = str(original_for_event.get(spec['deUID'], '') or '').strip()
+            if new_val != old_val:
+                changes.append({
+                    'eventId': event_id,
+                    'templateRowId': row_id,
+                    'personId': person_id,
+                    'personName': person_name,
+                    'enrollmentId': enrollment_id,
+                    'eventDate': row.get('Event Date', ''),
+                    'templateField': col_name,
+                    'deUID': spec['deUID'],
+                    'deName': spec['deName'],
+                    'deType': spec.get('deType', ''),
+                    'oldValue': old_val,
+                    'newValue': new_val,
+                    'changeType': 'DATA_VALUE',
+                    'operation': 'UPDATE',
+                })
+
+    # Fallback: when changes came from uploaded template overrides, make sure they are still detected.
+    if not changes and st.session_state.get('event_template_overrides'):
+        event_row_map = {
+            str(r.get('Template Row ID', '') or ''): r
+            for _, r in edited_df.iterrows()
+        }
+        for row_id, row_overrides in st.session_state['event_template_overrides'].items():
+            row_ctx = event_row_map.get(row_id)
+            event_id = str(row_ctx.get('Event ID', '') or '') if row_ctx is not None else ''
+            is_create_row = str(row_id).startswith('__NEW__')
+            original_for_event = original_values.get(event_id, {})
+            person_id = str(row_ctx.get('Person ID', '') or '') if row_ctx is not None else ''
+            person_name = str(row_ctx.get(name_col, '') or '') if (row_ctx is not None and name_col) else ''
+            event_date = str(row_ctx.get('Event Date', '') or '') if row_ctx is not None else ''
+            enrollment_id = str(st.session_state.event_meta.get(event_id, {}).get('enrollment', '') or '')
+            for col_name, val in row_overrides.items():
+                if is_create_row:
+                    if col_name == 'Person ID':
+                        person_val = str(val or '').strip()
+                        if person_val:
+                            changes.append({
+                                'templateRowId': row_id,
+                                'eventId': '',
+                                'personId': person_val,
+                                'personName': person_name,
+                                'eventDate': event_date,
+                                'templateField': 'Person ID',
+                                'deUID': '__CREATE_PERSON_ID__',
+                                'deName': 'Person ID',
+                                'deType': 'TEXT',
+                                'oldValue': '',
+                                'newValue': person_val,
+                                'changeType': 'CREATE_PERSON_ID',
+                                'operation': 'CREATE',
+                            })
+                        continue
+                    if col_name == 'Event Date':
+                        new_event_date_norm, _ = _normalize_event_date(str(val or '').strip())
+                        if new_event_date_norm:
+                            changes.append({
+                                'templateRowId': row_id,
+                                'eventId': '',
+                                'personId': person_id,
+                                'personName': person_name,
+                                'eventDate': new_event_date_norm,
+                                'templateField': 'Event Date',
+                                'deUID': '__CREATE_EVENT_DATE__',
+                                'deName': 'Event Date',
+                                'deType': 'DATE',
+                                'oldValue': '',
+                                'newValue': new_event_date_norm,
+                                'changeType': 'CREATE_EVENT_DATE',
+                                'operation': 'CREATE',
+                            })
+                    elif col_name == 'Enrollment Date':
+                        new_enrollment_date_norm, _ = _normalize_event_date(str(val or '').strip())
+                        if new_enrollment_date_norm:
+                            changes.append({
+                                'templateRowId': row_id,
+                                'eventId': '',
+                                'personId': person_id,
+                                'personName': person_name,
+                                'eventDate': event_date,
+                                'templateField': 'Enrollment Date',
+                                'deUID': '__CREATE_ENROLLMENT_DATE__',
+                                'deName': 'Enrollment Date',
+                                'deType': 'DATE',
+                                'oldValue': '',
+                                'newValue': new_enrollment_date_norm,
+                                'changeType': 'CREATE_ENROLLMENT_DATE',
+                                'operation': 'CREATE',
+                            })
+                    elif col_name in {spec['column'] for spec in attr_specs}:
+                        attr_spec = next((spec for spec in attr_specs if spec['column'] == col_name), None)
+                        if attr_spec and str(val or '').strip():
+                            changes.append({
+                                'templateRowId': row_id,
+                                'eventId': '',
+                                'personId': person_id,
+                                'personName': person_name,
+                                'eventDate': event_date,
+                                'templateField': col_name,
+                                'attrUID': attr_spec['attrUID'],
+                                'deUID': attr_spec['attrUID'],
+                                'deName': attr_spec['attrName'],
+                                'deType': attr_spec.get('attrType', ''),
+                                'oldValue': '',
+                                'newValue': str(val or '').strip(),
+                                'changeType': 'CREATE_ATTRIBUTE',
+                                'operation': 'CREATE',
+                            })
+                    else:
+                        spec = column_to_spec.get(col_name)
+                        if spec and str(val or '').strip():
+                            changes.append({
+                                'templateRowId': row_id,
+                                'eventId': '',
+                                'personId': person_id,
+                                'personName': person_name,
+                                'eventDate': event_date,
+                                'templateField': col_name,
+                                'deUID': spec['deUID'],
+                                'deName': spec['deName'],
+                                'deType': spec.get('deType', ''),
+                                'oldValue': '',
+                                'newValue': str(val or '').strip(),
+                                'changeType': 'CREATE_DATA_VALUE',
+                                'operation': 'CREATE',
+                            })
+                    continue
+                if col_name == 'Event Date':
+                    old_event_date_raw = st.session_state.event_meta.get(event_id, {}).get('eventDate', '')
+                    old_event_date, _ = _normalize_event_date(old_event_date_raw)
+                    new_event_date_raw = str(val or '').strip()
+                    new_event_date_norm, _ = _normalize_event_date(new_event_date_raw)
+                    if new_event_date_norm != old_event_date:
+                        changes.append({
+                            'templateRowId': row_id,
+                            'eventId': event_id,
+                            'personId': person_id,
+                            'personName': person_name,
+                            'enrollmentId': enrollment_id,
+                            'eventDate': new_event_date_norm,
+                            'templateField': 'Event Date',
+                            'deUID': '__EVENT_DATE__',
+                            'deName': 'Event Date',
+                            'deType': 'DATE',
+                            'oldValue': old_event_date,
+                            'newValue': new_event_date_norm,
+                            'changeType': 'EVENT_DATE',
+                            'operation': 'UPDATE',
+                        })
+                    continue
+                if col_name == 'Enrollment Date':
+                    old_enrollment_date_raw = st.session_state.event_meta.get(event_id, {}).get('enrollmentDate', '')
+                    old_enrollment_date, _ = _normalize_event_date(old_enrollment_date_raw)
+                    new_enrollment_date_raw = str(val or '').strip()
+                    new_enrollment_date_norm, _ = _normalize_event_date(new_enrollment_date_raw)
+                    if new_enrollment_date_norm != old_enrollment_date:
+                        changes.append({
+                            'templateRowId': row_id,
+                            'eventId': event_id,
+                            'personId': person_id,
+                            'personName': person_name,
+                            'enrollmentId': enrollment_id,
+                            'eventDate': event_date,
+                            'templateField': 'Enrollment Date',
+                            'deUID': '__ENROLLMENT_DATE__',
+                            'deName': 'Enrollment Date',
+                            'deType': 'DATE',
+                            'oldValue': old_enrollment_date,
+                            'newValue': new_enrollment_date_norm,
+                            'changeType': 'ENROLLMENT_DATE',
+                            'operation': 'UPDATE',
+                        })
+                    continue
+                spec = column_to_spec.get(col_name)
+                if not spec:
+                    continue
+                new_val = str(val or '').strip()
+                old_val = str(original_for_event.get(spec['deUID'], '') or '').strip()
+                if new_val != old_val:
+                    changes.append({
+                        'templateRowId': row_id,
+                        'eventId': event_id,
+                        'personId': person_id,
+                        'personName': person_name,
+                        'enrollmentId': enrollment_id,
+                        'eventDate': event_date,
+                        'templateField': col_name,
+                        'deUID': spec['deUID'],
+                        'deName': spec['deName'],
+                        'deType': spec.get('deType', ''),
+                        'oldValue': old_val,
+                        'newValue': new_val,
+                        'changeType': 'DATA_VALUE',
+                        'operation': 'UPDATE',
+                    })
+
+    # Deduplicate: same (eventId, deUID) from both paths → keep last entry
+    seen_keys = {}
+    for ch in changes:
+        dedupe_event = ch.get('eventId', '') or ch.get('templateRowId', '')
+        seen_keys[(dedupe_event, ch['deUID'])] = ch
+    changes = list(seen_keys.values())
+
+    st.session_state.event_has_unsaved_edits = len(changes) > 0
+
+    if st.session_state.get('event_show_review'):
+        st.markdown("---")
+        st.subheader("📋 Review Event Changes Before Pushing")
+        visible_changes = [c for c in changes if c.get('changeType') != 'CREATE_PERSON_ID']
+        st.info(f"**{len(visible_changes)} field value(s)** will be updated in DHIS2 events.")
+        if changes:
+            review_changes = [c for c in changes if c.get('changeType') != 'CREATE_PERSON_ID']
+            review_df = pd.DataFrame(review_changes)
+            review_cols = [
+                'operation', 'personName', 'personId', 'eventId', 'eventDate',
+                'templateField', 'oldValue', 'newValue', 'deType'
+            ]
+            for c in review_cols:
+                if c not in review_df.columns:
+                    review_df[c] = ''
+            review_df = review_df[review_cols].rename(columns={
+                'operation': 'Operation',
+                'personName': 'Person',
+                'personId': 'Person ID',
+                'eventId': 'Event ID',
+                'eventDate': 'Event Date',
+                'templateField': 'Template Field',
+                'oldValue': 'Current Value',
+                'newValue': 'New Value',
+                'deType': 'Type',
+            })
+            st.dataframe(review_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No event changes detected.")
+
+        r1, r2 = st.columns([1, 4])
+        with r1:
+            if st.button("✅ Confirm Event Push", type="primary"):
+                ok = push_events_to_dhis2(changes)
+                if ok:
+                    with st.spinner("Refreshing events..."):
+                        load_events_data()
+                        st.session_state['events_editor_rev'] += 1
+                        st.session_state['event_show_review'] = False
+        with r2:
+            if st.button("← Cancel", key="cancel_event_review"):
+                st.session_state['event_show_review'] = False
+                st.rerun()
+    else:
+        if changes:
+            st.markdown("---")
+            if st.button(f"Review & Push {len(changes)} Event Change(s)", type="primary"):
+                st.session_state['event_show_review'] = True
+                st.rerun()
 
 
 _POSITIVE_INT_TYPES = {'INTEGER_POSITIVE', 'INTEGER_ZERO_OR_POSITIVE'}
