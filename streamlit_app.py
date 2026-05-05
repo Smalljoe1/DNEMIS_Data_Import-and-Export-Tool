@@ -1416,6 +1416,8 @@ def push_events_to_dhis2(changes):
                 'program': _uid_str(meta.get('program'), st.session_state.selected_program),
                 'programStage': _uid_str(meta.get('programStage'), st.session_state.selected_program_stage),
                 'orgUnit': _uid_str(meta.get('orgUnit'), st.session_state.org_unit_uid),
+                'trackedEntityInstance': str(meta.get('trackedEntityInstance', '') or '').strip(),
+                'enrollment': str(meta.get('enrollment', '') or '').strip(),
                 'eventDate': meta.get('eventDate', ''),
                 'status': meta.get('status', 'ACTIVE'),
                 '_dv_map': base_data_values,  # keyed by deUID for easy override
