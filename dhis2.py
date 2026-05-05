@@ -923,7 +923,7 @@ def get_events(org_unit_uid: str, program_uid: str, program_stage_uid: str,
         'startDate': start_date,
         'endDate': end_date,
         'skipPaging': 'true',
-        'fields': 'event,eventDate,status,program,programStage,orgUnit,enrollment,trackedEntityInstance,dataValues[dataElement,value]',
+        'fields': 'event,eventDate,completedDate,status,program,programStage,orgUnit,enrollment,trackedEntityInstance,dataValues[dataElement,value]',
     }
     resp = requests.get(
         f'{DHIS2_BASE}/events',
@@ -1054,8 +1054,6 @@ def push_event_updates(event_updates: list, username: str, password: str) -> dic
                     active_resp = _put_event(active_payload)
                     if 200 <= active_resp.status_code < 300:
                         reclose_base = {**item, 'status': 'COMPLETED'}
-                        reclose_resp = _put_event(reclose_base)
-                        reclose_base['dataValues'] = active_payload.get('dataValues', [])
                         reclose_resp = _put_event(reclose_base)
                         if 200 <= reclose_resp.status_code < 300:
                             updated += 1

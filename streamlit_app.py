@@ -1229,6 +1229,7 @@ def load_events_data():
             'enrollment': enrollment_id,
             'enrollmentDate': enrollment_date,
             'eventDate': ev.get('eventDate', ''),
+            'completedDate': ev.get('completedDate', ''),
             'status': ev.get('status', 'ACTIVE'),
         }
 
@@ -1419,6 +1420,7 @@ def push_events_to_dhis2(changes):
                 'trackedEntityInstance': str(meta.get('trackedEntityInstance', '') or '').strip(),
                 'enrollment': str(meta.get('enrollment', '') or '').strip(),
                 'eventDate': meta.get('eventDate', ''),
+                'completedDate': meta.get('completedDate', ''),
                 'status': meta.get('status', 'ACTIVE'),
                 '_dv_map': base_data_values,  # keyed by deUID for easy override
             }
