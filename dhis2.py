@@ -1052,7 +1052,9 @@ def push_event_updates(event_updates: list, username: str, password: str) -> dic
                 _ou = str(item.get('orgUnit', '') or '').strip()
                 _enr = str(item.get('enrollment', '') or '').strip()
                 _ev_date = str(item.get('eventDate', '') or '').strip()
-                reopen_base = {'event': ev_uid, 'status': 'ACTIVE'}
+                # Include full dataValues in reopen/reclose payloads — some DHIS2 versions
+                # reject status-only PUTs with value_required_but_not_provided otherwise.
+                reopen_base = {'event': ev_uid, 'status': 'ACTIVE', 'dataValues': item.get('dataValues', [])}
                 if _prog:
                     reopen_base['program'] = _prog
                 if _stage:
@@ -1071,6 +1073,7 @@ def push_event_updates(event_updates: list, username: str, password: str) -> dic
                     if 200 <= active_resp.status_code < 300:
                         reclose_base = dict(reopen_base)
                         reclose_base['status'] = 'COMPLETED'
+                        reclose_base['dataValues'] = active_payload.get('dataValues', [])
                         reclose_resp = _put_event(reclose_base)
                         if 200 <= reclose_resp.status_code < 300:
                             updated += 1
