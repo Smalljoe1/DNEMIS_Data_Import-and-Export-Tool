@@ -967,6 +967,144 @@ def get_enrollment_details(enrollment_uids: list, username: str, password: str) 
 
 def push_event_updates(event_updates: list, username: str, password: str) -> dict:
     """Push event updates. event_updates is a list of full event payload objects."""
+    def _extract_error(resp: requests.Response) -> str:
+        try:
+            body = resp.json()
+        except ValueError:
+            return (resp.text or '').strip()[:300]
+
+        parts = []
+
+        def _collect_conflicts(container):
+            if not isinstance(container, dict):
+                return
+            for conflict in (container.get('conflicts') or container.get('importConflicts') or []):
+                if isinstance(conflict, dict):
+                    value = conflict.get('value') or conflict.get('object') or conflict.get('message') or str(conflict)
+                else:
+                    value = str(conflict)
+                parts.append(value)
+
+        if isinstance(body, dict):
+            for key in ('message', 'description'):
+                if body.get(key):
+                    parts.append(str(body.get(key)))
+            response = body.get('response', {}) if isinstance(body.get('response', {}), dict) else {}
+            for key in ('message', 'description'):
+                if response.get(key):
+                    parts.append(str(response.get(key)))
+
+            import_summary = response.get('importSummary') if isinstance(response.get('importSummary'), dict) else body.get('importSummary')
+            if isinstance(import_summary, dict):
+                for key in ('message', 'description'):
+                    if import_summary.get(key):
+                        parts.append(str(import_summary.get(key)))
+                _collect_conflicts(import_summary)
+
+            for summary in (response.get('importSummaries') or body.get('importSummaries') or []):
+                if not isinstance(summary, dict):
+                    continue
+                for key in ('message', 'description'):
+                    if summary.get(key):
+                        parts.append(str(summary.get(key)))
+                _collect_conflicts(summary)
+
+            _collect_conflicts(response)
+            _collect_conflicts(body)
+        return '; '.join(parts)[:300] if parts else (resp.text or '').strip()[:300]
+
+    def _run_put_fallback() -> dict:
+        updated = 0
+        ignored = 0
+        errors = []
+
+        for item in event_updates:
+            ev_uid = str(item.get('event', '') or '')
+            if not ev_uid:
+                ignored += 1
+                errors.append('Missing event UID in update payload')
+                continue
+
+            desired_status = str(item.get('status', '') or '').upper()
+            has_event_date = bool(str(item.get('eventDate', '') or '').strip())
+
+            def _put_event(payload_item: dict) -> requests.Response:
+                return requests.put(
+                    f'{DHIS2_BASE}/events/{ev_uid}',
+                    auth=(username, password),
+                    json=payload_item,
+                    headers={**_JSON_HEADERS, 'Content-Type': 'application/json'},
+                    timeout=TIMEOUT_LONG,
+                )
+
+            put_resp = _put_event(item)
+            if 200 <= put_resp.status_code < 300:
+                updated += 1
+                continue
+
+            retried = False
+            handled_failure = False
+            if put_resp.status_code == 409 and desired_status == 'COMPLETED' and has_event_date:
+                # Reopen -> apply full update while active -> re-complete.
+                # Build minimal base with required fields so DHIS2 accepts the status-only PUTs.
+                _prog = str(item.get('program', '') or '').strip()
+                _stage = str(item.get('programStage', '') or '').strip()
+                _ou = str(item.get('orgUnit', '') or '').strip()
+                _enr = str(item.get('enrollment', '') or '').strip()
+                _ev_date = str(item.get('eventDate', '') or '').strip()
+                reopen_base = {'event': ev_uid, 'status': 'ACTIVE'}
+                if _prog:
+                    reopen_base['program'] = _prog
+                if _stage:
+                    reopen_base['programStage'] = _stage
+                if _ou:
+                    reopen_base['orgUnit'] = _ou
+                if _enr:
+                    reopen_base['enrollment'] = _enr
+                if _ev_date:
+                    reopen_base['eventDate'] = _ev_date
+                reopen_resp = _put_event(reopen_base)
+                if 200 <= reopen_resp.status_code < 300:
+                    active_payload = dict(item)
+                    active_payload['status'] = 'ACTIVE'
+                    active_resp = _put_event(active_payload)
+                    if 200 <= active_resp.status_code < 300:
+                        reclose_base = dict(reopen_base)
+                        reclose_base['status'] = 'COMPLETED'
+                        reclose_resp = _put_event(reclose_base)
+                        if 200 <= reclose_resp.status_code < 300:
+                            updated += 1
+                            retried = True
+                        else:
+                            handled_failure = True
+                            ignored += 1
+                            errors.append(f"{ev_uid}: {_extract_error(reclose_resp)}")
+                    else:
+                        handled_failure = True
+                        ignored += 1
+                        errors.append(f"{ev_uid}: {_extract_error(active_resp)}")
+                else:
+                    handled_failure = True
+                    ignored += 1
+                    errors.append(f"{ev_uid}: {_extract_error(reopen_resp)}")
+
+            if not retried and not handled_failure:
+                ignored += 1
+                errors.append(f"{ev_uid}: {_extract_error(put_resp)}")
+
+        status = 'SUCCESS' if ignored == 0 else 'WARNING'
+        return {
+            'status': status,
+            'message': '; '.join(errors[:10]),
+            'response': {
+                'importCount': {
+                    'imported': 0,
+                    'updated': updated,
+                    'ignored': ignored,
+                }
+            },
+        }
+
     payload = {'events': event_updates}
     try:
         resp = requests.post(
@@ -977,42 +1115,20 @@ def push_event_updates(event_updates: list, username: str, password: str) -> dic
             timeout=TIMEOUT_LONG,
         )
         resp.raise_for_status()
-        return resp.json()
+        bulk_result = resp.json()
+
+        # Some DHIS2 instances return HTTP 200 with WARNING/ignored in import summary.
+        response_block = bulk_result.get('response', {}) if isinstance(bulk_result.get('response', {}), dict) else {}
+        imp = bulk_result.get('importSummary') or response_block.get('importSummary') or response_block or bulk_result
+        import_count = imp.get('importCount', {}) if isinstance(imp, dict) else {}
+        ignored = int(import_count.get('ignored', 0) or 0)
+        status = str(imp.get('status', bulk_result.get('status', ''))).upper() if isinstance(imp, dict) else str(bulk_result.get('status', '')).upper()
+
+        if ignored > 0 or status in ('WARNING', 'ERROR'):
+            return _run_put_fallback()
+        return bulk_result
     except requests.HTTPError:
-        # Fallback: push each event individually via PUT
-        updated = 0
-        ignored = 0
-        errors = []
-        for item in event_updates:
-            ev_uid = str(item.get('event', '') or '')
-            if not ev_uid:
-                ignored += 1
-                errors.append('Missing event UID in update payload')
-                continue
-            put_resp = requests.put(
-                f'{DHIS2_BASE}/events/{ev_uid}',
-                auth=(username, password),
-                json=item,
-                headers={**_JSON_HEADERS, 'Content-Type': 'application/json'},
-                timeout=TIMEOUT_LONG,
-            )
-            if 200 <= put_resp.status_code < 300:
-                updated += 1
-            else:
-                ignored += 1
-                errors.append(f"{ev_uid}: {put_resp.text[:200]}")
-        status = 'SUCCESS' if ignored == 0 else 'WARNING'
-        return {
-            'status': status,
-            'message': '; '.join(errors[:3]),
-            'response': {
-                'importCount': {
-                    'imported': 0,
-                    'updated': updated,
-                    'ignored': ignored,
-                }
-            },
-        }
+        return _run_put_fallback()
 
 
 def push_enrollment_updates(enrollment_updates: list, username: str, password: str) -> dict:

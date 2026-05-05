@@ -1214,11 +1214,17 @@ def load_events_data():
             spec['deUID']: value_map.get(spec['deUID'], '')
             for spec in specs
         }
+        def _uid(val):
+            """Extract UID string from either a plain string or a DHIS2 {id:...} object."""
+            if isinstance(val, dict):
+                return val.get('id') or val.get('uid') or ''
+            return str(val or '').strip()
+
         event_meta[event_id] = {
             'event': event_id,
-            'program': ev.get('program', st.session_state.selected_program),
-            'programStage': ev.get('programStage', st.session_state.selected_program_stage),
-            'orgUnit': ev.get('orgUnit', st.session_state.org_unit_uid),
+            'program': _uid(ev.get('program', st.session_state.selected_program)),
+            'programStage': _uid(ev.get('programStage', st.session_state.selected_program_stage)),
+            'orgUnit': _uid(ev.get('orgUnit', st.session_state.org_unit_uid)),
             'trackedEntityInstance': tei_uid,
             'enrollment': enrollment_id,
             'enrollmentDate': enrollment_date,
@@ -1391,12 +1397,18 @@ def push_events_to_dhis2(changes):
     for change in event_changes:
         event_id = change['eventId']
         meta = st.session_state.event_meta.get(event_id, {})
+
+        def _uid_str(val, fallback=''):
+            if isinstance(val, dict):
+                return val.get('id') or val.get('uid') or fallback
+            return str(val or fallback).strip()
+
         if event_id not in grouped:
             grouped[event_id] = {
                 'event': event_id,
-                'program': meta.get('program', st.session_state.selected_program),
-                'programStage': meta.get('programStage', st.session_state.selected_program_stage),
-                'orgUnit': meta.get('orgUnit', st.session_state.org_unit_uid),
+                'program': _uid_str(meta.get('program'), st.session_state.selected_program),
+                'programStage': _uid_str(meta.get('programStage'), st.session_state.selected_program_stage),
+                'orgUnit': _uid_str(meta.get('orgUnit'), st.session_state.org_unit_uid),
                 'eventDate': meta.get('eventDate', ''),
                 'status': meta.get('status', 'ACTIVE'),
                 'dataValues': [],
@@ -1793,6 +1805,16 @@ def display_events_interface():
     stage_columns = [s['column'] for s in specs]
     attr_columns = [s['column'] for s in attr_specs]
     template_editable_columns = attr_columns + stage_columns + ['Person ID', 'Event Date', 'Enrollment Date']
+
+    def _normalize_event_compare_value(raw_value, de_type=''):
+        val = '' if pd.isna(raw_value) else str(raw_value).strip()
+        if de_type in _BOOL_TYPES:
+            low = val.lower()
+            if low in ('true', '1', 'yes'):
+                return 'true'
+            if low in ('false', '0', 'no'):
+                return 'false'
+        return val
 
     # Build working table and apply any imported template overrides.
     df = pd.DataFrame(st.session_state.event_rows + _build_create_template_rows(attr_specs, specs))
@@ -2222,8 +2244,9 @@ def display_events_interface():
 
         for col_name, spec in column_to_spec.items():
             new_raw = row.get(col_name, '')
-            new_val = '' if pd.isna(new_raw) else str(new_raw).strip()
-            old_val = str(original_for_event.get(spec['deUID'], '') or '').strip()
+            de_type = spec.get('deType', '')
+            new_val = _normalize_event_compare_value(new_raw, de_type)
+            old_val = _normalize_event_compare_value(original_for_event.get(spec['deUID'], ''), de_type)
             if new_val != old_val:
                 changes.append({
                     'eventId': event_id,
@@ -2401,8 +2424,9 @@ def display_events_interface():
                 spec = column_to_spec.get(col_name)
                 if not spec:
                     continue
-                new_val = str(val or '').strip()
-                old_val = str(original_for_event.get(spec['deUID'], '') or '').strip()
+                de_type = spec.get('deType', '')
+                new_val = _normalize_event_compare_value(val, de_type)
+                old_val = _normalize_event_compare_value(original_for_event.get(spec['deUID'], ''), de_type)
                 if new_val != old_val:
                     changes.append({
                         'templateRowId': row_id,
