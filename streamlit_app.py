@@ -1404,6 +1404,13 @@ def push_events_to_dhis2(changes):
             return str(val or fallback).strip()
 
         if event_id not in grouped:
+            # Pre-populate ALL existing data values so mandatory fields aren't wiped by PUT.
+            # DHIS2 PUT replaces the entire event; only sending changed values removes required fields.
+            existing_dv = st.session_state.event_original_values.get(event_id, {})
+            base_data_values = {
+                de_uid: str(val)
+                for de_uid, val in existing_dv.items()
+            }
             grouped[event_id] = {
                 'event': event_id,
                 'program': _uid_str(meta.get('program'), st.session_state.selected_program),
@@ -1411,17 +1418,23 @@ def push_events_to_dhis2(changes):
                 'orgUnit': _uid_str(meta.get('orgUnit'), st.session_state.org_unit_uid),
                 'eventDate': meta.get('eventDate', ''),
                 'status': meta.get('status', 'ACTIVE'),
-                'dataValues': [],
+                '_dv_map': base_data_values,  # keyed by deUID for easy override
             }
         if change.get('changeType') == 'EVENT_DATE':
             grouped[event_id]['eventDate'] = str(change.get('newValue', '')).strip()
         elif change.get('changeType') == 'EVENT_STATUS':
             grouped[event_id]['status'] = str(change.get('newValue', '')).strip().upper()
         else:
-            grouped[event_id]['dataValues'].append({
-                'dataElement': change['deUID'],
-                'value': str(change['newValue']).strip(),
-            })
+            # Override this specific data element with the new value
+            grouped[event_id]['_dv_map'][change['deUID']] = str(change['newValue']).strip()
+
+    # Convert _dv_map to the dataValues list DHIS2 expects
+    for ev_payload in grouped.values():
+        dv_map = ev_payload.pop('_dv_map', {})
+        ev_payload['dataValues'] = [
+            {'dataElement': de_uid, 'value': val}
+            for de_uid, val in dv_map.items()
+        ]
 
     updates = list(grouped.values())
 
