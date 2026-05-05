@@ -1046,33 +1046,15 @@ def push_event_updates(event_updates: list, username: str, password: str) -> dic
             handled_failure = False
             if put_resp.status_code == 409 and desired_status == 'COMPLETED' and has_event_date:
                 # Reopen -> apply full update while active -> re-complete.
-                # Build minimal base with required fields so DHIS2 accepts the status-only PUTs.
-                _prog = str(item.get('program', '') or '').strip()
-                _stage = str(item.get('programStage', '') or '').strip()
-                _ou = str(item.get('orgUnit', '') or '').strip()
-                _enr = str(item.get('enrollment', '') or '').strip()
-                _ev_date = str(item.get('eventDate', '') or '').strip()
-                # Include full dataValues in reopen/reclose payloads — some DHIS2 versions
-                # reject status-only PUTs with value_required_but_not_provided otherwise.
-                reopen_base = {'event': ev_uid, 'status': 'ACTIVE', 'dataValues': item.get('dataValues', [])}
-                if _prog:
-                    reopen_base['program'] = _prog
-                if _stage:
-                    reopen_base['programStage'] = _stage
-                if _ou:
-                    reopen_base['orgUnit'] = _ou
-                if _enr:
-                    reopen_base['enrollment'] = _enr
-                if _ev_date:
-                    reopen_base['eventDate'] = _ev_date
+                # Use the full item as base for reopen/reclose to avoid value_required_but_not_provided.
+                reopen_base = {**item, 'status': 'ACTIVE'}
                 reopen_resp = _put_event(reopen_base)
                 if 200 <= reopen_resp.status_code < 300:
-                    active_payload = dict(item)
-                    active_payload['status'] = 'ACTIVE'
+                    active_payload = {**item, 'status': 'ACTIVE'}
                     active_resp = _put_event(active_payload)
                     if 200 <= active_resp.status_code < 300:
-                        reclose_base = dict(reopen_base)
-                        reclose_base['status'] = 'COMPLETED'
+                        reclose_base = {**item, 'status': 'COMPLETED'}
+                        reclose_resp = _put_event(reclose_base)
                         reclose_base['dataValues'] = active_payload.get('dataValues', [])
                         reclose_resp = _put_event(reclose_base)
                         if 200 <= reclose_resp.status_code < 300:
