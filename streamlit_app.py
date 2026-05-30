@@ -226,6 +226,15 @@ def main_app():
                 if st.session_state.data_mode == "Aggregate Forms":
                     filtered_level5_ous = list(level5_ous)
                     selected_dataset_uid = str(st.session_state.get('selected_dataset', '') or '')
+                    # Use the live dataset widget value when available, even though the dataset
+                    # selectbox is rendered later in the sidebar.
+                    selected_dataset_name = str(st.session_state.get('dataset_select', '') or '')
+                    if selected_dataset_name:
+                        ds_map = {
+                            ds.get('name', ''): ds.get('id', '')
+                            for ds in load_datasets(st.session_state.username, st.session_state.password)
+                        }
+                        selected_dataset_uid = str(ds_map.get(selected_dataset_name, selected_dataset_uid) or '')
                     dataset_filter_applied = False
                     if selected_dataset_uid:
                         dataset_org_units = load_dataset_org_units(
@@ -259,9 +268,6 @@ def main_app():
                     filtered_labels = list(filtered_ou_options.keys())
 
                     default_uids = [uid for uid in st.session_state.get('selected_org_units', []) if uid in filtered_ou_label_by_uid]
-                    if not default_uids:
-                        current_uid = str(st.session_state.get('org_unit_uid', '') or '')
-                        default_uids = [current_uid] if current_uid in filtered_ou_label_by_uid else []
                     default_labels = [filtered_ou_label_by_uid[uid] for uid in default_uids if uid in filtered_ou_label_by_uid]
 
                     selected_labels = st.multiselect(
@@ -362,6 +368,43 @@ def main_app():
                     index=default_index
                 )
                 st.session_state.selected_dataset = dataset_options[selected_dataset_name]
+
+                prev_dataset_uid = str(st.session_state.get('_last_dataset', '') or '')
+                curr_dataset_uid = str(st.session_state.selected_dataset or '')
+                if curr_dataset_uid and prev_dataset_uid and curr_dataset_uid != prev_dataset_uid:
+                    try:
+                        level5_ous = load_descendant_level5_org_units(
+                            st.session_state.get('root_org_unit_uid', ''),
+                            st.session_state.username,
+                            st.session_state.password,
+                        )
+                        level5_ids = {
+                            str(ou.get('id', '') or '')
+                            for ou in level5_ous
+                            if str(ou.get('id', '') or '')
+                        }
+                        dataset_ous = load_dataset_org_units(
+                            curr_dataset_uid,
+                            st.session_state.username,
+                            st.session_state.password,
+                        )
+                        dataset_level5_ids = {
+                            str(ou.get('id', '') or '')
+                            for ou in dataset_ous
+                            if str(ou.get('id', '') or '') in level5_ids
+                        }
+                        if dataset_level5_ids:
+                            overlap = [
+                                uid for uid in st.session_state.get('selected_org_units', [])
+                                if uid in dataset_level5_ids
+                            ]
+                            if not overlap:
+                                st.session_state.selected_org_units = []
+                                st.session_state.selected_org_unit_labels = {}
+                                st.session_state['org_units_multi_select'] = []
+                                st.info("Dataset changed and no previously selected schools match it. School selection was cleared.")
+                    except Exception:
+                        pass
 
             # Unsaved-change protection: detect dataset or period change while edits pending
             _ds_changed = st.session_state.get('_last_dataset') != st.session_state.selected_dataset
