@@ -226,6 +226,34 @@ def get_datasets(username: str, password: str) -> list:
     return data.get('dataSets', [])
 
 
+def get_dataset_org_units(dataset_uid: str, username: str, password: str) -> list:
+    """Return org units explicitly assigned to a dataset.
+
+    Returns a list of dicts: {id, name, code, level, parent}.
+    """
+    if not dataset_uid:
+        return []
+    data = _get(
+        f'/dataSets/{dataset_uid}',
+        username,
+        password,
+        params={
+            'fields': 'id,organisationUnits[id,name,code,level,parent[id,name,level]]',
+        },
+        timeout=TIMEOUT_LONG,
+    )
+    out = []
+    for ou in data.get('organisationUnits', []) or []:
+        out.append({
+            'id': str(ou.get('id', '') or ''),
+            'name': str(ou.get('name', '') or ''),
+            'code': str(ou.get('code', '') or ''),
+            'level': int(ou.get('level', 0) or 0),
+            'parent': ou.get('parent', {}) if isinstance(ou.get('parent', {}), dict) else {},
+        })
+    return out
+
+
 def get_programs(username: str, password: str) -> list:
     """Return programs visible to the authenticated user."""
     data = _get(
