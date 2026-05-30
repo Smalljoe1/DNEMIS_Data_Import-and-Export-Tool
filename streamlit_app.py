@@ -34,6 +34,8 @@ def init_session_state():
         'selected_dataset': None,
         'selected_period': '2024',
         'selected_org_unit': None,
+        'selected_org_units': [],
+        'selected_org_unit_labels': {},
         'compare_results': None,
         'edit_mode': False,
         'edited_values': {},
@@ -199,29 +201,66 @@ def main_app():
             if level5_ous:
                 st.subheader("Data Org Unit")
                 ou_options = {}
+                ou_label_by_uid = {}
                 for ou in level5_ous:
+                    uid = str(ou.get('id', '') or '')
                     name = str(ou.get('name', '') or '')
                     code = str(ou.get('code', '') or '')
                     label = f"{name} ({code})" if code else name
                     ou_options[label] = ou
+                    ou_label_by_uid[uid] = label
+
                 labels = list(ou_options.keys())
-                current_uid = str(st.session_state.get('org_unit_uid', '') or '')
-                selected_idx = 0
-                for idx, lbl in enumerate(labels):
-                    if str(ou_options[lbl].get('id', '') or '') == current_uid:
-                        selected_idx = idx
-                        break
-                selected_ou_label = st.selectbox(
-                    "Level 5 school",
-                    options=labels,
-                    index=selected_idx,
-                    key="org_unit_select",
-                )
-                selected_ou = ou_options[selected_ou_label]
-                st.session_state.org_unit_uid = str(selected_ou.get('id', '') or '')
-                st.session_state.school_name = str(selected_ou.get('name', '') or st.session_state.school_name)
-                st.session_state.school_code = str(selected_ou.get('code', '') or '')
-                st.caption("Scoped to selected Level 5 org unit for fetch/export/import/push.")
+
+                if st.session_state.data_mode == "Aggregate Forms":
+                    default_uids = [uid for uid in st.session_state.get('selected_org_units', []) if uid in ou_label_by_uid]
+                    if not default_uids:
+                        current_uid = str(st.session_state.get('org_unit_uid', '') or '')
+                        default_uids = [current_uid] if current_uid in ou_label_by_uid else []
+                    default_labels = [ou_label_by_uid[uid] for uid in default_uids if uid in ou_label_by_uid]
+
+                    selected_labels = st.multiselect(
+                        "Level 5 schools (same dataset)",
+                        options=labels,
+                        default=default_labels,
+                        key="org_units_multi_select",
+                    )
+                    selected_uids = [str(ou_options[lbl].get('id', '') or '') for lbl in selected_labels]
+                    st.session_state.selected_org_units = selected_uids
+                    st.session_state.selected_org_unit_labels = {
+                        str(ou_options[lbl].get('id', '') or ''): str(ou_options[lbl].get('name', '') or '')
+                        for lbl in selected_labels
+                    }
+                    if selected_uids:
+                        primary_uid = selected_uids[0]
+                        primary_ou = next((x for x in level5_ous if str(x.get('id', '') or '') == primary_uid), None)
+                        st.session_state.org_unit_uid = primary_uid
+                        if primary_ou:
+                            st.session_state.school_name = str(primary_ou.get('name', '') or st.session_state.school_name)
+                            st.session_state.school_code = str(primary_ou.get('code', '') or '')
+                    st.caption("Aggregate fetch/export/import/push will use all selected schools.")
+                else:
+                    current_uid = str(st.session_state.get('org_unit_uid', '') or '')
+                    selected_idx = 0
+                    for idx, lbl in enumerate(labels):
+                        if str(ou_options[lbl].get('id', '') or '') == current_uid:
+                            selected_idx = idx
+                            break
+                    selected_ou_label = st.selectbox(
+                        "Level 5 school",
+                        options=labels,
+                        index=selected_idx,
+                        key="org_unit_select",
+                    )
+                    selected_ou = ou_options[selected_ou_label]
+                    st.session_state.org_unit_uid = str(selected_ou.get('id', '') or '')
+                    st.session_state.selected_org_units = [st.session_state.org_unit_uid]
+                    st.session_state.selected_org_unit_labels = {
+                        st.session_state.org_unit_uid: str(selected_ou.get('name', '') or '')
+                    }
+                    st.session_state.school_name = str(selected_ou.get('name', '') or st.session_state.school_name)
+                    st.session_state.school_code = str(selected_ou.get('code', '') or '')
+                    st.caption("Scoped to selected Level 5 org unit for fetch/export/import/push.")
 
         if st.session_state.data_mode == "Aggregate Forms":
             st.subheader("Select Dataset")
@@ -274,9 +313,9 @@ def main_app():
             # Unsaved-change protection: detect dataset or period change while edits pending
             _ds_changed = st.session_state.get('_last_dataset') != st.session_state.selected_dataset
             _per_changed = st.session_state.get('_last_period') != str(st.session_state.selected_period)
-            _ou_changed = st.session_state.get('_last_org_unit') != st.session_state.org_unit_uid
+            _ou_changed = st.session_state.get('_last_org_units') != list(st.session_state.get('selected_org_units', []))
             if (_ds_changed or _per_changed or _ou_changed) and st.session_state.edited_values:
-                st.warning("⚠️ You have unsaved edits. Switching dataset/period will discard them.")
+                st.warning("⚠️ You have unsaved edits. Switching dataset/period/org units will discard them.")
                 col_keep, col_discard = st.columns(2)
                 with col_keep:
                     if st.button("Keep editing", key="nav_keep"):
@@ -292,14 +331,14 @@ def main_app():
                         st.session_state['show_push_review'] = False
                         st.session_state['_last_dataset'] = st.session_state.selected_dataset
                         st.session_state['_last_period'] = str(st.session_state.selected_period)
-                        st.session_state['_last_org_unit'] = st.session_state.org_unit_uid
+                        st.session_state['_last_org_units'] = list(st.session_state.get('selected_org_units', []))
                         st.rerun()
             elif _ds_changed or _per_changed or _ou_changed:
                 st.session_state.compare_results = None
                 st.session_state['show_push_review'] = False
             st.session_state['_last_dataset'] = st.session_state.selected_dataset
             st.session_state['_last_period'] = str(st.session_state.selected_period)
-            st.session_state['_last_org_unit'] = st.session_state.org_unit_uid
+            st.session_state['_last_org_units'] = list(st.session_state.get('selected_org_units', []))
 
         else:
             st.subheader("Select Program Stage")
@@ -399,7 +438,11 @@ def main_app():
                 logout()
     
     # Main content area
-    st.header(f"Data Entry - {st.session_state.school_name}")
+    selected_ous = list(st.session_state.get('selected_org_units', []) or [])
+    if st.session_state.data_mode == "Aggregate Forms" and len(selected_ous) > 1:
+        st.header(f"Data Entry - {len(selected_ous)} Selected Schools")
+    else:
+        st.header(f"Data Entry - {st.session_state.school_name}")
 
     # Pending navigation confirmation (logout with unsaved edits)
     if st.session_state.get('pending_nav') == 'logout':
@@ -459,6 +502,8 @@ def main_app():
                 rows = st.session_state.compare_results['rows']
                 df = pd.DataFrame([
                     {
+                        'orgUnitUID': r.get('orgUnitUID', st.session_state.org_unit_uid),
+                        'Org Unit': r.get('orgUnitName', st.session_state.school_name),
                         'Section': r['sectionName'],
                         'Data Element': r['deName'],
                         'Disaggregation': r['cocName'],
@@ -503,7 +548,8 @@ def main_app():
                             raw = str(csv_row.get('Local Value', '')).strip()
                             if raw.lower() in ('nan', ''):
                                 continue  # skip blank cells
-                            key = f"{str(csv_row['deUID']).strip()}|{str(csv_row['cocUID']).strip()}"
+                            row_org_uid = str(csv_row.get('orgUnitUID', '') or '').strip() or st.session_state.org_unit_uid
+                            key = f"{row_org_uid}|{str(csv_row['deUID']).strip()}|{str(csv_row['cocUID']).strip()}"
                             de_type = type_map.get(key, '')
                             err = None
                             if de_type in numeric_types:
@@ -524,6 +570,7 @@ def main_app():
                                 })
                             else:
                                 entries.append({
+                                    'orgUnitUID': row_org_uid,
                                     'deUID': str(csv_row['deUID']).strip(),
                                     'cocUID': str(csv_row['cocUID']).strip(),
                                     'value': raw
@@ -532,11 +579,20 @@ def main_app():
                             st.warning(f"⚠️ {len(errors)} row(s) failed validation and were skipped:")
                             st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
                         if entries:
-                            count = db.save_local_values(
-                                st.session_state.org_unit_uid,
-                                str(st.session_state.selected_period),
-                                entries
-                            )
+                            by_ou = {}
+                            for e in entries:
+                                by_ou.setdefault(str(e.get('orgUnitUID', '') or st.session_state.org_unit_uid), []).append({
+                                    'deUID': e['deUID'],
+                                    'cocUID': e['cocUID'],
+                                    'value': e['value'],
+                                })
+                            count = 0
+                            for ou_uid, ou_entries in by_ou.items():
+                                count += db.save_local_values(
+                                    ou_uid,
+                                    str(st.session_state.selected_period),
+                                    ou_entries
+                                )
                             st.success(f"Saved {count} value(s). {len(errors)} row(s) skipped.")
                             load_comparison_data()
                         elif not errors:
@@ -553,6 +609,7 @@ def main_app():
                 rows = st.session_state.compare_results['rows']
                 entries = [
                     {
+                        'orgUnitUID': r.get('orgUnitUID', st.session_state.org_unit_uid),
                         'deUID': r['deUID'],
                         'cocUID': r['cocUID'],
                         'value': r['localValue']
@@ -562,36 +619,60 @@ def main_app():
                 if not entries:
                     st.warning("No local values to post.")
                 else:
-                    # Persist local values to DB before pushing
-                    db.save_local_values(
-                        st.session_state.org_unit_uid,
-                        str(st.session_state.selected_period),
-                        entries
-                    )
                     try:
-                        result = dhis2.push_data_values(
-                            st.session_state.org_unit_uid,
-                            str(st.session_state.selected_period),
-                            st.session_state.selected_dataset,
-                            entries,
-                            st.session_state.username,
-                            st.session_state.password
-                        )
-                        response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
-                        imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
-                        imported = imp.get('importCount', {}).get('imported', 0)
-                        updated = imp.get('importCount', {}).get('updated', 0)
-                        ignored = imp.get('importCount', {}).get('ignored', 0)
-                        status = imp.get('status', 'UNKNOWN')
-                        message = imp.get('description', '') or imp.get('message', '') or ''
-                        conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
-                        db.log_sync(
-                            st.session_state.org_unit_uid,
-                            st.session_state.selected_dataset,
-                            str(st.session_state.selected_period),
-                            len(entries), imported, updated, ignored,
-                            status, message, conflicts
-                        )
+                        by_ou = {}
+                        for e in entries:
+                            ou_uid = str(e.get('orgUnitUID', '') or st.session_state.org_unit_uid)
+                            by_ou.setdefault(ou_uid, []).append({
+                                'deUID': e['deUID'],
+                                'cocUID': e['cocUID'],
+                                'value': e['value'],
+                            })
+
+                        imported = updated = ignored = 0
+                        status = 'SUCCESS'
+                        message_parts = []
+
+                        for ou_uid, ou_entries in by_ou.items():
+                            db.save_local_values(
+                                ou_uid,
+                                str(st.session_state.selected_period),
+                                ou_entries
+                            )
+                            result = dhis2.push_data_values(
+                                ou_uid,
+                                str(st.session_state.selected_period),
+                                st.session_state.selected_dataset,
+                                ou_entries,
+                                st.session_state.username,
+                                st.session_state.password
+                            )
+                            response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
+                            imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
+                            imported += int(imp.get('importCount', {}).get('imported', 0) or 0)
+                            updated += int(imp.get('importCount', {}).get('updated', 0) or 0)
+                            ignored += int(imp.get('importCount', {}).get('ignored', 0) or 0)
+                            ou_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
+                            ou_message = imp.get('description', '') or imp.get('message', '') or ''
+                            conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
+                            db.log_sync(
+                                ou_uid,
+                                st.session_state.selected_dataset,
+                                str(st.session_state.selected_period),
+                                len(ou_entries),
+                                int(imp.get('importCount', {}).get('imported', 0) or 0),
+                                int(imp.get('importCount', {}).get('updated', 0) or 0),
+                                int(imp.get('importCount', {}).get('ignored', 0) or 0),
+                                ou_status,
+                                ou_message,
+                                conflicts
+                            )
+                            if ou_status not in ('SUCCESS', 'OK'):
+                                status = 'WARNING'
+                            if ou_message:
+                                message_parts.append(ou_message)
+
+                        message = '; '.join(message_parts[:5])
                         if status in ('SUCCESS', 'OK'):
                             st.success(f"✅ Successfully posted! Imported: {imported}, Updated: {updated}")
                             load_comparison_data()
@@ -617,6 +698,10 @@ def main_app():
 def load_comparison_data():
     """Load and compare DHIS2 vs local data"""
     try:
+        if st.session_state.data_mode == "Aggregate Forms" and not st.session_state.get('selected_org_units'):
+            st.warning("Please select at least one Level 5 school in the sidebar.")
+            st.session_state.compare_results = None
+            return
         result = compare_data()
         st.session_state.compare_results = result
         st.session_state.edit_mode = False
@@ -629,20 +714,15 @@ def compare_data():
     """Compare DHIS2 data with local data"""
     username = st.session_state.username
     password = st.session_state.password
-    org_uid = st.session_state.org_unit_uid
+    selected_org_uids = list(st.session_state.get('selected_org_units', []) or [])
+    if not selected_org_uids:
+        selected_org_uids = [st.session_state.org_unit_uid]
+    org_labels = st.session_state.get('selected_org_unit_labels', {}) or {}
     period = str(st.session_state.selected_period)
     dataset_uid = st.session_state.selected_dataset
     
     # Fetch dataset elements
     elements = dhis2.get_dataset_elements(dataset_uid, username, password)
-    
-    # Fetch DHIS2 values
-    dhis2_values_uid = dhis2.get_data_values(
-        org_uid, period, dataset_uid, username, password, id_scheme='uid'
-    )
-    
-    # Fetch local values
-    local_values = db.get_local_values(org_uid, period)
     
     # Load export map fallback
     dataset_export_map = export_maps.load_dataset_export_map(dataset_uid)
@@ -710,63 +790,72 @@ def compare_data():
     )
     
     expected_keys = {f"{el['deUID']}|{el['cocUID']}" for el in elements}
-    fetched_uid_keys = set(dhis2_values_uid.keys())
-    unmatched_fetched_uid_keys = fetched_uid_keys - expected_keys
-    
-    if unmatched_fetched_uid_keys:
-        dhis2_values_name = dhis2.get_data_values(
-            org_uid, period, dataset_uid, username, password, id_scheme='name'
-        )
-        for raw_key, value in dhis2_values_name.items():
-            de_name, coc_name = (raw_key.split('|', 1) + [''])[:2]
-            de_norm = _norm_name(de_name)
-            for coc_variant in _coc_variants(coc_name):
-                norm_key = f"{de_norm}|{coc_variant}"
-                dhis2_values_name_norm[norm_key] = value
-    
-    # Build rows
+
+    # Build rows across selected schools.
     rows = []
-    for el in elements:
-        key_uid = f"{el['deUID']}|{el['cocUID']}"
-        de_norm = _norm_name(el['deName'])
-        candidate_name_keys = [f"{de_norm}|{v}" for v in _coc_variants(el['cocName'])]
-        
-        if key_uid in dhis2_values_uid:
-            dhis2_val = dhis2_values_uid.get(key_uid, '')
-        elif any(k in dhis2_values_name_norm for k in candidate_name_keys):
-            k = next(k for k in candidate_name_keys if k in dhis2_values_name_norm)
-            dhis2_val = dhis2_values_name_norm.get(k, '')
-        elif key_uid in dataset_export_map['uid_map']:
-            dhis2_val = dataset_export_map['uid_map'].get(key_uid, '')
-        else:
-            dhis2_val = ''
-        
-        local_val = local_values.get(key_uid, '')
-        
-        # Determine status
-        if dhis2_val == '' and local_val == '':
-            status = 'both_empty'
-        elif dhis2_val == '':
-            status = 'missing_dhis2'
-        elif local_val == '':
-            status = 'missing_local'
-        elif dhis2_val == local_val:
-            status = 'match'
-        else:
-            status = 'differs'
-        
-        rows.append({
-            'sectionName': el.get('sectionName', 'Unsectioned') or 'Unsectioned',
-            'deName': el['deName'],
-            'deUID': el['deUID'],
-            'deType': el.get('deType', ''),
-            'cocName': el['cocName'],
-            'cocUID': el['cocUID'],
-            'dhis2Value': dhis2_val,
-            'localValue': local_val,
-            'status': status,
-            'row_key': key_uid
-        })
+    for org_uid in selected_org_uids:
+        dhis2_values_uid = dhis2.get_data_values(
+            org_uid, period, dataset_uid, username, password, id_scheme='uid'
+        )
+        local_values = db.get_local_values(org_uid, period)
+        dhis2_values_name_norm = {}
+
+        fetched_uid_keys = set(dhis2_values_uid.keys())
+        unmatched_fetched_uid_keys = fetched_uid_keys - expected_keys
+        if unmatched_fetched_uid_keys:
+            dhis2_values_name = dhis2.get_data_values(
+                org_uid, period, dataset_uid, username, password, id_scheme='name'
+            )
+            for raw_key, value in dhis2_values_name.items():
+                de_name, coc_name = (raw_key.split('|', 1) + [''])[:2]
+                de_norm = _norm_name(de_name)
+                for coc_variant in _coc_variants(coc_name):
+                    norm_key = f"{de_norm}|{coc_variant}"
+                    dhis2_values_name_norm[norm_key] = value
+
+        org_name = org_labels.get(org_uid, org_uid)
+        for el in elements:
+            key_uid = f"{el['deUID']}|{el['cocUID']}"
+            de_norm = _norm_name(el['deName'])
+            candidate_name_keys = [f"{de_norm}|{v}" for v in _coc_variants(el['cocName'])]
+
+            if key_uid in dhis2_values_uid:
+                dhis2_val = dhis2_values_uid.get(key_uid, '')
+            elif any(k in dhis2_values_name_norm for k in candidate_name_keys):
+                k = next(k for k in candidate_name_keys if k in dhis2_values_name_norm)
+                dhis2_val = dhis2_values_name_norm.get(k, '')
+            elif key_uid in dataset_export_map['uid_map']:
+                dhis2_val = dataset_export_map['uid_map'].get(key_uid, '')
+            else:
+                dhis2_val = ''
+
+            local_val = local_values.get(key_uid, '')
+
+            if dhis2_val == '' and local_val == '':
+                status = 'both_empty'
+            elif dhis2_val == '':
+                status = 'missing_dhis2'
+            elif local_val == '':
+                status = 'missing_local'
+            elif dhis2_val == local_val:
+                status = 'match'
+            else:
+                status = 'differs'
+
+            rows.append({
+                'orgUnitUID': org_uid,
+                'orgUnitName': org_name,
+                'sectionName': el.get('sectionName', 'Unsectioned') or 'Unsectioned',
+                'deName': el['deName'],
+                'deUID': el['deUID'],
+                'deType': el.get('deType', ''),
+                'cocName': el['cocName'],
+                'cocUID': el['cocUID'],
+                'dhis2Value': dhis2_val,
+                'localValue': local_val,
+                'status': status,
+                'row_key': f"{org_uid}|{key_uid}",
+            })
     
     return {
         'rows': rows,
@@ -857,10 +946,11 @@ def display_data_entry_interface():
             st.rerun()
         st.markdown("---")
 
-    # Group by section
+    # Group by school + section
     sections = {}
     for row in filtered_rows:
-        section = row['sectionName']
+        school_label = row.get('orgUnitName', row.get('orgUnitUID', ''))
+        section = f"{school_label} :: {row['sectionName']}"
         if section not in sections:
             sections[section] = []
         sections[section].append(row)
@@ -953,6 +1043,7 @@ def display_push_review():
         new_val = st.session_state.edited_values.get(row['row_key'])
         if new_val is not None and new_val != (row['localValue'] or ''):
             changed.append({
+                'School': row.get('orgUnitName', row.get('orgUnitUID', '')),
                 'Section': row['sectionName'],
                 'Data Element': row['deName'],
                 'Disaggregation': row['cocName'] or 'Default',
@@ -2668,7 +2759,9 @@ def _validate_push_entries(entries, rows):
     clean, issues = [], []
 
     for entry in entries:
-        key = f"{entry['deUID']}|{entry['cocUID']}"
+        key = str(entry.get('row_key', '') or '')
+        if not key:
+            key = f"{entry.get('orgUnitUID', st.session_state.org_unit_uid)}|{entry['deUID']}|{entry['cocUID']}"
         meta = row_meta.get(key, {})
         de_type = meta.get('deType', '')
         name = meta.get('deName', key)
@@ -2722,6 +2815,8 @@ def push_to_dhis2():
             new_value = st.session_state.edited_values[row['row_key']]
             if new_value != row['localValue']:
                 entries.append({
+                    'orgUnitUID': row.get('orgUnitUID', st.session_state.org_unit_uid),
+                    'row_key': row['row_key'],
                     'deUID': row['deUID'],
                     'cocUID': row['cocUID'],
                     'value': new_value
@@ -2742,43 +2837,68 @@ def push_to_dhis2():
         return
 
     try:
-        db.save_local_values(
-            st.session_state.org_unit_uid,
-            str(st.session_state.selected_period),
-            entries
-        )
-        sent_entry_map = {f"{e['deUID']}|{e['cocUID']}": e for e in entries}
-        result = dhis2.push_data_values(
-            st.session_state.org_unit_uid,
-            str(st.session_state.selected_period),
-            st.session_state.selected_dataset,
-            entries,
-            st.session_state.username,
-            st.session_state.password
-        )
-        # Parse response
-        response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
-        imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
-        imported = imp.get('importCount', {}).get('imported', 0)
-        updated = imp.get('importCount', {}).get('updated', 0)
-        ignored = imp.get('importCount', {}).get('ignored', 0)
-        status = imp.get('status', 'UNKNOWN')
-        message = imp.get('description', '') or imp.get('message', '') or ''
-        conflicts = ''
-        if 'conflicts' in imp:
-            conflicts = str(imp['conflicts'])
-        db.log_sync(
-            st.session_state.org_unit_uid,
-            st.session_state.selected_dataset,
-            str(st.session_state.selected_period),
-            len(entries),
-            imported,
-            updated,
-            ignored,
-            status,
-            message,
-            conflicts
-        )
+        by_ou = {}
+        for e in entries:
+            ou_uid = str(e.get('orgUnitUID', '') or st.session_state.org_unit_uid)
+            by_ou.setdefault(ou_uid, []).append(e)
+
+        sent_entry_map = {
+            str(e.get('row_key', '') or f"{e.get('orgUnitUID', st.session_state.org_unit_uid)}|{e['deUID']}|{e['cocUID']}"): e
+            for e in entries
+        }
+
+        imported = updated = ignored = 0
+        status = 'SUCCESS'
+        message_parts = []
+        all_conflicts = []
+
+        for ou_uid, ou_entries_full in by_ou.items():
+            ou_entries = [
+                {'deUID': e['deUID'], 'cocUID': e['cocUID'], 'value': e['value']}
+                for e in ou_entries_full
+            ]
+            db.save_local_values(
+                ou_uid,
+                str(st.session_state.selected_period),
+                ou_entries
+            )
+            result = dhis2.push_data_values(
+                ou_uid,
+                str(st.session_state.selected_period),
+                st.session_state.selected_dataset,
+                ou_entries,
+                st.session_state.username,
+                st.session_state.password
+            )
+            response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
+            imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
+            imported += int(imp.get('importCount', {}).get('imported', 0) or 0)
+            updated += int(imp.get('importCount', {}).get('updated', 0) or 0)
+            ignored += int(imp.get('importCount', {}).get('ignored', 0) or 0)
+            ou_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
+            ou_message = imp.get('description', '') or imp.get('message', '') or ''
+            conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
+            if conflicts:
+                all_conflicts.append(conflicts)
+            if ou_status not in ('SUCCESS', 'OK'):
+                status = 'WARNING'
+            if ou_message:
+                message_parts.append(ou_message)
+            db.log_sync(
+                ou_uid,
+                st.session_state.selected_dataset,
+                str(st.session_state.selected_period),
+                len(ou_entries),
+                int(imp.get('importCount', {}).get('imported', 0) or 0),
+                int(imp.get('importCount', {}).get('updated', 0) or 0),
+                int(imp.get('importCount', {}).get('ignored', 0) or 0),
+                ou_status,
+                ou_message,
+                conflicts
+            )
+
+        message = '; '.join(message_parts[:5])
+        conflicts = '; '.join(all_conflicts[:5])
         if status in ('SUCCESS', 'OK'):
             st.success(f"✅ Successfully synced! Imported: {imported}, Updated: {updated}")
             st.session_state.edited_values = {}
@@ -2805,7 +2925,10 @@ def push_to_dhis2():
                 else:
                     retry = list(entries)
             st.session_state['retry_entries'] = retry
-            retry_keys = {f"{e['deUID']}|{e['cocUID']}" for e in retry}
+            retry_keys = {
+                str(e.get('row_key', '') or f"{e.get('orgUnitUID', st.session_state.org_unit_uid)}|{e['deUID']}|{e['cocUID']}")
+                for e in retry
+            }
             # Keep only values that were not accepted so the review button does not retain synced edits.
             st.session_state.edited_values = {
                 k: v['value'] for k, v in sent_entry_map.items() if k in retry_keys
