@@ -163,6 +163,7 @@ def login(username: str, password: str) -> dict:
 
     return {
         'orgUnitUID': ou['id'],
+        'orgUnitLevel': int(ou.get('level', 0) or 0),
         'schoolName': ou.get('name', ''),
         'schoolCode': ou.get('code', ''),
         'parentName': ward_name,
@@ -170,6 +171,45 @@ def login(username: str, password: str) -> dict:
         'lgaName': lga_name,
         'userName':   data.get('name', username),
     }
+
+
+def get_descendant_org_units(root_org_unit_uid: str, username: str, password: str,
+                             target_level: int | None = None) -> list:
+    """Return descendant org units under a root OU.
+
+    When target_level is provided, only that OU level is returned.
+    """
+    if not root_org_unit_uid:
+        return []
+
+    path_filter = f"path:like:/{root_org_unit_uid}"
+    data = _get(
+        '/organisationUnits',
+        username,
+        password,
+        params={
+            'paging': 'false',
+            'fields': 'id,name,code,level,parent[id,name,level]',
+            'filter': path_filter,
+        },
+        timeout=TIMEOUT_LONG,
+    )
+    org_units = data.get('organisationUnits', []) or []
+    out = []
+    for ou in org_units:
+        level = int(ou.get('level', 0) or 0)
+        if target_level is not None and level != int(target_level):
+            continue
+        out.append({
+            'id': str(ou.get('id', '') or ''),
+            'name': str(ou.get('name', '') or ''),
+            'code': str(ou.get('code', '') or ''),
+            'level': level,
+            'parent': ou.get('parent', {}) if isinstance(ou.get('parent', {}), dict) else {},
+        })
+
+    out.sort(key=lambda x: ((x.get('name') or '').lower(), x.get('id') or ''))
+    return out
 
 
 # ---------------------------------------------------------------------------

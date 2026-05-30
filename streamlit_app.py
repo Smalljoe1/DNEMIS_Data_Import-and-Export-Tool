@@ -23,6 +23,8 @@ def init_session_state():
         'password': '',
         'instance_url': 'https://asc.education.gov.ng/dhis',
         'org_unit_uid': '',
+        'root_org_unit_uid': '',
+        'root_org_unit_level': 0,
         'school_name': '',
         'school_code': '',
         'ward_name': '',
@@ -101,6 +103,8 @@ def login_page():
                 st.session_state.username = username
                 st.session_state.password = password
                 st.session_state.org_unit_uid = info['orgUnitUID']
+                st.session_state.root_org_unit_uid = info['orgUnitUID']
+                st.session_state.root_org_unit_level = int(info.get('orgUnitLevel', 0) or 0)
                 st.session_state.school_name = info['schoolName']
                 st.session_state.school_code = info['schoolCode']
                 st.session_state.ward_name = info['wardName']
@@ -141,12 +145,27 @@ def load_program_stages(program_uid, username, password):
     except Exception:
         return []
 
+
+@st.cache_data(ttl=300)
+def load_descendant_level5_org_units(root_org_uid, username, password):
+    if not root_org_uid:
+        return []
+    try:
+        return dhis2.get_descendant_org_units(
+            root_org_uid,
+            username,
+            password,
+            target_level=5,
+        )
+    except Exception:
+        return []
+
 # Main application
 def main_app():
     # Sidebar with user info and navigation
     with st.sidebar:
         st.header(f"Welcome, {st.session_state.user_name}")
-        st.markdown(f"**School:** {st.session_state.school_name}")
+        st.markdown(f"**Org Unit:** {st.session_state.school_name}")
         st.markdown(f"**Code:** {st.session_state.school_code}")
         st.markdown(f"**Ward:** {st.session_state.ward_name}")
         st.markdown(f"**LGA:** {st.session_state.lga_name}")
@@ -169,6 +188,40 @@ def main_app():
             format_func=lambda x: str(x),
             index=len(years)-1
         )
+
+        # Org unit scope selection: Level 3 users can target Level 5 schools under their LGA.
+        if int(st.session_state.get('root_org_unit_level', 0) or 0) < 5:
+            level5_ous = load_descendant_level5_org_units(
+                st.session_state.get('root_org_unit_uid', ''),
+                st.session_state.username,
+                st.session_state.password,
+            )
+            if level5_ous:
+                st.subheader("Data Org Unit")
+                ou_options = {}
+                for ou in level5_ous:
+                    name = str(ou.get('name', '') or '')
+                    code = str(ou.get('code', '') or '')
+                    label = f"{name} ({code})" if code else name
+                    ou_options[label] = ou
+                labels = list(ou_options.keys())
+                current_uid = str(st.session_state.get('org_unit_uid', '') or '')
+                selected_idx = 0
+                for idx, lbl in enumerate(labels):
+                    if str(ou_options[lbl].get('id', '') or '') == current_uid:
+                        selected_idx = idx
+                        break
+                selected_ou_label = st.selectbox(
+                    "Level 5 school",
+                    options=labels,
+                    index=selected_idx,
+                    key="org_unit_select",
+                )
+                selected_ou = ou_options[selected_ou_label]
+                st.session_state.org_unit_uid = str(selected_ou.get('id', '') or '')
+                st.session_state.school_name = str(selected_ou.get('name', '') or st.session_state.school_name)
+                st.session_state.school_code = str(selected_ou.get('code', '') or '')
+                st.caption("Scoped to selected Level 5 org unit for fetch/export/import/push.")
 
         if st.session_state.data_mode == "Aggregate Forms":
             st.subheader("Select Dataset")
@@ -221,7 +274,8 @@ def main_app():
             # Unsaved-change protection: detect dataset or period change while edits pending
             _ds_changed = st.session_state.get('_last_dataset') != st.session_state.selected_dataset
             _per_changed = st.session_state.get('_last_period') != str(st.session_state.selected_period)
-            if (_ds_changed or _per_changed) and st.session_state.edited_values:
+            _ou_changed = st.session_state.get('_last_org_unit') != st.session_state.org_unit_uid
+            if (_ds_changed or _per_changed or _ou_changed) and st.session_state.edited_values:
                 st.warning("⚠️ You have unsaved edits. Switching dataset/period will discard them.")
                 col_keep, col_discard = st.columns(2)
                 with col_keep:
@@ -238,12 +292,14 @@ def main_app():
                         st.session_state['show_push_review'] = False
                         st.session_state['_last_dataset'] = st.session_state.selected_dataset
                         st.session_state['_last_period'] = str(st.session_state.selected_period)
+                        st.session_state['_last_org_unit'] = st.session_state.org_unit_uid
                         st.rerun()
-            elif _ds_changed or _per_changed:
+            elif _ds_changed or _per_changed or _ou_changed:
                 st.session_state.compare_results = None
                 st.session_state['show_push_review'] = False
             st.session_state['_last_dataset'] = st.session_state.selected_dataset
             st.session_state['_last_period'] = str(st.session_state.selected_period)
+            st.session_state['_last_org_unit'] = st.session_state.org_unit_uid
 
         else:
             st.subheader("Select Program Stage")
@@ -277,8 +333,9 @@ def main_app():
             _prog_changed = st.session_state.get('_last_program') != st.session_state.selected_program
             _stage_changed = st.session_state.get('_last_program_stage') != st.session_state.selected_program_stage
             _per_changed = st.session_state.get('_last_period_events') != str(st.session_state.selected_period)
+            _ou_changed = st.session_state.get('_last_org_unit_events') != st.session_state.org_unit_uid
 
-            if (_prog_changed or _stage_changed or _per_changed) and st.session_state.get('event_has_unsaved_edits'):
+            if (_prog_changed or _stage_changed or _per_changed or _ou_changed) and st.session_state.get('event_has_unsaved_edits'):
                 st.warning("⚠️ You have unsaved event edits. Switching context will discard them.")
                 keep_col, discard_col = st.columns(2)
                 with keep_col:
@@ -310,14 +367,16 @@ def main_app():
                         st.session_state['_last_program'] = st.session_state.selected_program
                         st.session_state['_last_program_stage'] = st.session_state.selected_program_stage
                         st.session_state['_last_period_events'] = str(st.session_state.selected_period)
+                        st.session_state['_last_org_unit_events'] = st.session_state.org_unit_uid
                         load_events_data()
                         st.rerun()
-            elif _prog_changed or _stage_changed or _per_changed:
+            elif _prog_changed or _stage_changed or _per_changed or _ou_changed:
                 st.session_state['event_show_review'] = False
                 st.session_state['event_has_unsaved_edits'] = False
                 st.session_state['_last_program'] = st.session_state.selected_program
                 st.session_state['_last_program_stage'] = st.session_state.selected_program_stage
                 st.session_state['_last_period_events'] = str(st.session_state.selected_period)
+                st.session_state['_last_org_unit_events'] = st.session_state.org_unit_uid
                 if st.session_state.selected_program and st.session_state.selected_program_stage:
                     load_events_data()
 
