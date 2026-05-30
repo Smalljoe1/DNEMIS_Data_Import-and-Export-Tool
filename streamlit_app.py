@@ -202,125 +202,6 @@ def main_app():
             index=len(years)-1
         )
 
-        # Org unit scope selection: Level 3 users can target Level 5 schools under their LGA.
-        if int(st.session_state.get('root_org_unit_level', 0) or 0) < 5:
-            level5_ous = load_descendant_level5_org_units(
-                st.session_state.get('root_org_unit_uid', ''),
-                st.session_state.username,
-                st.session_state.password,
-            )
-            if level5_ous:
-                st.subheader("Data Org Unit")
-                ou_options = {}
-                ou_label_by_uid = {}
-                for ou in level5_ous:
-                    uid = str(ou.get('id', '') or '')
-                    name = str(ou.get('name', '') or '')
-                    code = str(ou.get('code', '') or '')
-                    label = f"{name} ({code})" if code else name
-                    ou_options[label] = ou
-                    ou_label_by_uid[uid] = label
-
-                labels = list(ou_options.keys())
-
-                if st.session_state.data_mode == "Aggregate Forms":
-                    filtered_level5_ous = list(level5_ous)
-                    selected_dataset_uid = str(st.session_state.get('selected_dataset', '') or '')
-                    # Use the live dataset widget value when available, even though the dataset
-                    # selectbox is rendered later in the sidebar.
-                    selected_dataset_name = str(st.session_state.get('dataset_select', '') or '')
-                    if selected_dataset_name:
-                        ds_map = {
-                            ds.get('name', ''): ds.get('id', '')
-                            for ds in load_datasets(st.session_state.username, st.session_state.password)
-                        }
-                        selected_dataset_uid = str(ds_map.get(selected_dataset_name, selected_dataset_uid) or '')
-                    dataset_filter_applied = False
-                    if selected_dataset_uid:
-                        dataset_org_units = load_dataset_org_units(
-                            selected_dataset_uid,
-                            st.session_state.username,
-                            st.session_state.password,
-                        )
-                        dataset_ou_ids = {
-                            str(ou.get('id', '') or '')
-                            for ou in dataset_org_units
-                            if str(ou.get('id', '') or '')
-                        }
-                        if dataset_ou_ids:
-                            candidate = [
-                                ou for ou in level5_ous
-                                if str(ou.get('id', '') or '') in dataset_ou_ids
-                            ]
-                            if candidate:
-                                filtered_level5_ous = candidate
-                                dataset_filter_applied = True
-
-                    filtered_ou_options = {}
-                    filtered_ou_label_by_uid = {}
-                    for ou in filtered_level5_ous:
-                        uid = str(ou.get('id', '') or '')
-                        name = str(ou.get('name', '') or '')
-                        code = str(ou.get('code', '') or '')
-                        label = f"{name} ({code})" if code else name
-                        filtered_ou_options[label] = ou
-                        filtered_ou_label_by_uid[uid] = label
-                    filtered_labels = list(filtered_ou_options.keys())
-
-                    default_uids = [uid for uid in st.session_state.get('selected_org_units', []) if uid in filtered_ou_label_by_uid]
-                    default_labels = [filtered_ou_label_by_uid[uid] for uid in default_uids if uid in filtered_ou_label_by_uid]
-
-                    selected_labels = st.multiselect(
-                        "Level 5 schools (same dataset)",
-                        options=filtered_labels,
-                        default=default_labels,
-                        key="org_units_multi_select",
-                    )
-                    selected_uids = [str(filtered_ou_options[lbl].get('id', '') or '') for lbl in selected_labels]
-                    st.session_state.selected_org_units = selected_uids
-                    st.session_state.selected_org_unit_labels = {
-                        str(filtered_ou_options[lbl].get('id', '') or ''): str(filtered_ou_options[lbl].get('name', '') or '')
-                        for lbl in selected_labels
-                    }
-                    if selected_uids:
-                        primary_uid = selected_uids[0]
-                        primary_ou = next((x for x in filtered_level5_ous if str(x.get('id', '') or '') == primary_uid), None)
-                        st.session_state.org_unit_uid = primary_uid
-                        if primary_ou:
-                            st.session_state.school_name = str(primary_ou.get('name', '') or st.session_state.school_name)
-                            st.session_state.school_code = str(primary_ou.get('code', '') or '')
-                    if dataset_filter_applied:
-                        st.caption("Aggregate school list is filtered to schools assigned to the selected dataset.")
-                    else:
-                        st.caption("Aggregate fetch/export/import/push will use all selected schools.")
-                else:
-                    default_uids = [uid for uid in st.session_state.get('selected_org_units', []) if uid in ou_label_by_uid]
-                    if not default_uids:
-                        current_uid = str(st.session_state.get('org_unit_uid', '') or '')
-                        default_uids = [current_uid] if current_uid in ou_label_by_uid else []
-                    default_labels = [ou_label_by_uid[uid] for uid in default_uids if uid in ou_label_by_uid]
-
-                    selected_labels = st.multiselect(
-                        "Level 5 schools",
-                        options=labels,
-                        default=default_labels,
-                        key="org_units_multi_select_events",
-                    )
-                    selected_uids = [str(ou_options[lbl].get('id', '') or '') for lbl in selected_labels]
-                    st.session_state.selected_org_units = selected_uids
-                    st.session_state.selected_org_unit_labels = {
-                        str(ou_options[lbl].get('id', '') or ''): str(ou_options[lbl].get('name', '') or '')
-                        for lbl in selected_labels
-                    }
-                    if selected_uids:
-                        primary_uid = selected_uids[0]
-                        primary_ou = next((x for x in level5_ous if str(x.get('id', '') or '') == primary_uid), None)
-                        st.session_state.org_unit_uid = primary_uid
-                        if primary_ou:
-                            st.session_state.school_name = str(primary_ou.get('name', '') or st.session_state.school_name)
-                            st.session_state.school_code = str(primary_ou.get('code', '') or '')
-                    st.caption("Events fetch/export/import/push will use all selected schools.")
-
         if st.session_state.data_mode == "Aggregate Forms":
             st.subheader("Select Dataset")
 
@@ -406,6 +287,76 @@ def main_app():
                     except Exception:
                         pass
 
+            # Org unit scope selection (after dataset): Level 3 users can target Level 5 schools under their LGA.
+            if int(st.session_state.get('root_org_unit_level', 0) or 0) < 5:
+                level5_ous = load_descendant_level5_org_units(
+                    st.session_state.get('root_org_unit_uid', ''),
+                    st.session_state.username,
+                    st.session_state.password,
+                )
+                if level5_ous:
+                    st.subheader("Data Org Unit")
+                    filtered_level5_ous = list(level5_ous)
+                    selected_dataset_uid = str(st.session_state.get('selected_dataset', '') or '')
+                    dataset_filter_applied = False
+                    if selected_dataset_uid:
+                        dataset_org_units = load_dataset_org_units(
+                            selected_dataset_uid,
+                            st.session_state.username,
+                            st.session_state.password,
+                        )
+                        dataset_ou_ids = {
+                            str(ou.get('id', '') or '')
+                            for ou in dataset_org_units
+                            if str(ou.get('id', '') or '')
+                        }
+                        if dataset_ou_ids:
+                            candidate = [
+                                ou for ou in level5_ous
+                                if str(ou.get('id', '') or '') in dataset_ou_ids
+                            ]
+                            if candidate:
+                                filtered_level5_ous = candidate
+                                dataset_filter_applied = True
+
+                    filtered_ou_options = {}
+                    filtered_ou_label_by_uid = {}
+                    for ou in filtered_level5_ous:
+                        uid = str(ou.get('id', '') or '')
+                        name = str(ou.get('name', '') or '')
+                        code = str(ou.get('code', '') or '')
+                        label = f"{name} ({code})" if code else name
+                        filtered_ou_options[label] = ou
+                        filtered_ou_label_by_uid[uid] = label
+                    filtered_labels = list(filtered_ou_options.keys())
+
+                    default_uids = [uid for uid in st.session_state.get('selected_org_units', []) if uid in filtered_ou_label_by_uid]
+                    default_labels = [filtered_ou_label_by_uid[uid] for uid in default_uids if uid in filtered_ou_label_by_uid]
+
+                    selected_labels = st.multiselect(
+                        "Level 5 schools (same dataset)",
+                        options=filtered_labels,
+                        default=default_labels,
+                        key="org_units_multi_select",
+                    )
+                    selected_uids = [str(filtered_ou_options[lbl].get('id', '') or '') for lbl in selected_labels]
+                    st.session_state.selected_org_units = selected_uids
+                    st.session_state.selected_org_unit_labels = {
+                        str(filtered_ou_options[lbl].get('id', '') or ''): str(filtered_ou_options[lbl].get('name', '') or '')
+                        for lbl in selected_labels
+                    }
+                    if selected_uids:
+                        primary_uid = selected_uids[0]
+                        primary_ou = next((x for x in filtered_level5_ous if str(x.get('id', '') or '') == primary_uid), None)
+                        st.session_state.org_unit_uid = primary_uid
+                        if primary_ou:
+                            st.session_state.school_name = str(primary_ou.get('name', '') or st.session_state.school_name)
+                            st.session_state.school_code = str(primary_ou.get('code', '') or '')
+                    if dataset_filter_applied:
+                        st.caption("Aggregate school list is filtered to schools assigned to the selected dataset.")
+                    else:
+                        st.caption("Aggregate fetch/export/import/push will use all selected schools.")
+
             # Unsaved-change protection: detect dataset or period change while edits pending
             _ds_changed = st.session_state.get('_last_dataset') != st.session_state.selected_dataset
             _per_changed = st.session_state.get('_last_period') != str(st.session_state.selected_period)
@@ -437,6 +388,52 @@ def main_app():
             st.session_state['_last_org_units'] = list(st.session_state.get('selected_org_units', []))
 
         else:
+            if int(st.session_state.get('root_org_unit_level', 0) or 0) < 5:
+                level5_ous = load_descendant_level5_org_units(
+                    st.session_state.get('root_org_unit_uid', ''),
+                    st.session_state.username,
+                    st.session_state.password,
+                )
+                if level5_ous:
+                    st.subheader("Data Org Unit")
+                    ou_options = {}
+                    ou_label_by_uid = {}
+                    for ou in level5_ous:
+                        uid = str(ou.get('id', '') or '')
+                        name = str(ou.get('name', '') or '')
+                        code = str(ou.get('code', '') or '')
+                        label = f"{name} ({code})" if code else name
+                        ou_options[label] = ou
+                        ou_label_by_uid[uid] = label
+
+                    labels = list(ou_options.keys())
+                    default_uids = [uid for uid in st.session_state.get('selected_org_units', []) if uid in ou_label_by_uid]
+                    if not default_uids:
+                        current_uid = str(st.session_state.get('org_unit_uid', '') or '')
+                        default_uids = [current_uid] if current_uid in ou_label_by_uid else []
+                    default_labels = [ou_label_by_uid[uid] for uid in default_uids if uid in ou_label_by_uid]
+
+                    selected_labels = st.multiselect(
+                        "Level 5 schools",
+                        options=labels,
+                        default=default_labels,
+                        key="org_units_multi_select_events",
+                    )
+                    selected_uids = [str(ou_options[lbl].get('id', '') or '') for lbl in selected_labels]
+                    st.session_state.selected_org_units = selected_uids
+                    st.session_state.selected_org_unit_labels = {
+                        str(ou_options[lbl].get('id', '') or ''): str(ou_options[lbl].get('name', '') or '')
+                        for lbl in selected_labels
+                    }
+                    if selected_uids:
+                        primary_uid = selected_uids[0]
+                        primary_ou = next((x for x in level5_ous if str(x.get('id', '') or '') == primary_uid), None)
+                        st.session_state.org_unit_uid = primary_uid
+                        if primary_ou:
+                            st.session_state.school_name = str(primary_ou.get('name', '') or st.session_state.school_name)
+                            st.session_state.school_code = str(primary_ou.get('code', '') or '')
+                    st.caption("Events fetch/export/import/push will use all selected schools.")
+
             st.subheader("Select Program Stage")
             programs = load_programs(st.session_state.username, st.session_state.password)
             program_options = {p['name']: p['id'] for p in programs}
