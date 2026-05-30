@@ -1668,12 +1668,137 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
             dv['categoryOptionCombo'] = e['cocUID']
         data_values.append(dv)
 
-    payload = {'dataValues': data_values}
-    # DEBUG: Print payload for troubleshooting
-    try:
-        import streamlit as st
-        st.write("Payload to DHIS2:")
-        st.json(payload)
-    except Exception:
-        pass
-    return _post('/dataValueSets', username, password, payload)
+    if not data_values:
+        return {
+            'status': 'OK',
+            'message': 'No non-empty values to push.',
+            'response': {
+                'importCount': {
+                    'imported': 0,
+                    'updated': 0,
+                    'ignored': 0,
+                }
+            },
+        }
+
+    def _result_from_json(raw: dict) -> dict:
+        response_block = raw.get('response', {}) if isinstance(raw.get('response', {}), dict) else {}
+        imp = raw.get('importSummary') or response_block.get('importSummary') or response_block or raw
+        counts = imp.get('importCount', {}) if isinstance(imp, dict) else {}
+        imported = int(counts.get('imported', 0) or 0)
+        updated = int(counts.get('updated', 0) or 0)
+        ignored = int(counts.get('ignored', 0) or 0)
+        status = str(
+            (imp.get('status', '') if isinstance(imp, dict) else '')
+            or raw.get('status', '')
+            or raw.get('httpStatus', '')
+            or 'UNKNOWN'
+        ).upper()
+        message = ''
+        if isinstance(imp, dict):
+            message = str(imp.get('description', '') or imp.get('message', '') or '').strip()
+        if not message:
+            message = str(raw.get('message', '') or '').strip()
+        return {
+            'status': status,
+            'message': message,
+            'imported': imported,
+            'updated': updated,
+            'ignored': ignored,
+        }
+
+    def _merge_results(parts: list) -> dict:
+        imported = sum(int(p.get('imported', 0) or 0) for p in parts)
+        updated = sum(int(p.get('updated', 0) or 0) for p in parts)
+        ignored = sum(int(p.get('ignored', 0) or 0) for p in parts)
+        messages = [str(p.get('message', '') or '').strip() for p in parts if str(p.get('message', '') or '').strip()]
+        statuses = {str(p.get('status', '') or '').upper() for p in parts}
+        status = 'SUCCESS'
+        if ignored > 0 or 'ERROR' in statuses or 'WARNING' in statuses:
+            status = 'WARNING'
+        elif statuses and statuses.issubset({'OK', 'SUCCESS'}):
+            status = 'SUCCESS'
+        elif statuses and statuses != {'UNKNOWN'}:
+            status = 'OK'
+        return {
+            'status': status,
+            'message': '; '.join(messages[:10]),
+            'imported': imported,
+            'updated': updated,
+            'ignored': ignored,
+        }
+
+    def _post_batch(batch: list) -> dict:
+        payload = {'dataValues': batch}
+        try:
+            resp = requests.post(
+                f'{DHIS2_BASE}/dataValueSets',
+                auth=(username, password),
+                json=payload,
+                headers={**_JSON_HEADERS, 'Content-Type': 'application/json'},
+                timeout=TIMEOUT_LONG,
+            )
+            resp.raise_for_status()
+            try:
+                body = resp.json()
+            except Exception:
+                body = {}
+            return _result_from_json(body)
+        except requests.exceptions.Timeout:
+            # Retry once with a longer timeout; if it still fails, split batch.
+            try:
+                retry_resp = requests.post(
+                    f'{DHIS2_BASE}/dataValueSets',
+                    auth=(username, password),
+                    json=payload,
+                    headers={**_JSON_HEADERS, 'Content-Type': 'application/json'},
+                    timeout=240,
+                )
+                retry_resp.raise_for_status()
+                try:
+                    body = retry_resp.json()
+                except Exception:
+                    body = {}
+                return _result_from_json(body)
+            except requests.exceptions.Timeout:
+                if len(batch) <= 1:
+                    return {
+                        'status': 'WARNING',
+                        'message': 'Timed out posting 1 value after retry.',
+                        'imported': 0,
+                        'updated': 0,
+                        'ignored': 1,
+                    }
+                mid = max(1, len(batch) // 2)
+                return _merge_results([_post_batch(batch[:mid]), _post_batch(batch[mid:])])
+        except requests.HTTPError as exc:
+            code = int(exc.response.status_code) if exc.response is not None else 0
+            if code in (502, 503, 504):
+                if len(batch) <= 1:
+                    return {
+                        'status': 'WARNING',
+                        'message': f'DHIS2 gateway error {code} for 1 value.',
+                        'imported': 0,
+                        'updated': 0,
+                        'ignored': 1,
+                    }
+                mid = max(1, len(batch) // 2)
+                return _merge_results([_post_batch(batch[:mid]), _post_batch(batch[mid:])])
+            raise
+
+    parts = []
+    for batch in _chunked(data_values, chunk_size=200):
+        parts.append(_post_batch(batch))
+
+    merged = _merge_results(parts)
+    return {
+        'status': merged['status'],
+        'message': merged['message'],
+        'response': {
+            'importCount': {
+                'imported': merged['imported'],
+                'updated': merged['updated'],
+                'ignored': merged['ignored'],
+            }
+        },
+    }
