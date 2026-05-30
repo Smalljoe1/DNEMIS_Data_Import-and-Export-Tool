@@ -1705,12 +1705,16 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
             'imported': imported,
             'updated': updated,
             'ignored': ignored,
+            'uncertain': [],
         }
 
     def _merge_results(parts: list) -> dict:
         imported = sum(int(p.get('imported', 0) or 0) for p in parts)
         updated = sum(int(p.get('updated', 0) or 0) for p in parts)
         ignored = sum(int(p.get('ignored', 0) or 0) for p in parts)
+        uncertain = []
+        for p in parts:
+            uncertain.extend(list(p.get('uncertain', []) or []))
         messages = [str(p.get('message', '') or '').strip() for p in parts if str(p.get('message', '') or '').strip()]
         statuses = {str(p.get('status', '') or '').upper() for p in parts}
         status = 'SUCCESS'
@@ -1726,7 +1730,21 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
             'imported': imported,
             'updated': updated,
             'ignored': ignored,
+            'uncertain': uncertain,
         }
+
+    def _canonical_value(value) -> str:
+        """Normalize values for robust equality checks after uncertain posts."""
+        text = str(value if value is not None else '').strip()
+        if text == '':
+            return ''
+        try:
+            num = float(text)
+            if num.is_integer():
+                return str(int(num))
+            return str(num)
+        except Exception:
+            return text
 
     def _post_batch(batch: list) -> dict:
         payload = {'dataValues': batch}
@@ -1767,7 +1785,8 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
                         'message': 'Timed out posting 1 value after retry.',
                         'imported': 0,
                         'updated': 0,
-                        'ignored': 1,
+                        'ignored': 0,
+                        'uncertain': list(batch),
                     }
                 mid = max(1, len(batch) // 2)
                 return _merge_results([_post_batch(batch[:mid]), _post_batch(batch[mid:])])
@@ -1780,7 +1799,8 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
                         'message': f'DHIS2 gateway error {code} for 1 value.',
                         'imported': 0,
                         'updated': 0,
-                        'ignored': 1,
+                        'ignored': 0,
+                        'uncertain': list(batch),
                     }
                 mid = max(1, len(batch) // 2)
                 return _merge_results([_post_batch(batch[:mid]), _post_batch(batch[mid:])])
@@ -1791,6 +1811,54 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
         parts.append(_post_batch(batch))
 
     merged = _merge_results(parts)
+
+    # If the request timed out or hit gateway issues, DHIS2 may still have processed it.
+    uncertain_values = list(merged.get('uncertain', []) or [])
+    if uncertain_values:
+        try:
+            current_values = get_data_values(
+                org_unit_uid,
+                period,
+                dataset_uid,
+                username,
+                password,
+                id_scheme='uid',
+            )
+            verified = 0
+            unresolved = 0
+            for dv in uncertain_values:
+                de_uid = str(dv.get('dataElement', '') or '')
+                coc_uid = str(dv.get('categoryOptionCombo', '') or '')
+                key = f"{de_uid}|{coc_uid}" if coc_uid else f"{de_uid}|"
+                server_value = current_values.get(key, None)
+                if server_value is not None and _canonical_value(server_value) == _canonical_value(dv.get('value', '')):
+                    verified += 1
+                else:
+                    unresolved += 1
+
+            merged['updated'] += verified
+            merged['ignored'] += unresolved
+
+            note_parts = []
+            if verified:
+                note_parts.append(f"Verified {verified} timed-out value(s) as successfully imported on DHIS2.")
+            if unresolved:
+                note_parts.append(f"Could not verify {unresolved} value(s) after timeout/gateway errors.")
+            if note_parts:
+                merged['message'] = '; '.join([merged.get('message', ''), ' '.join(note_parts)]).strip('; ').strip()
+        except Exception:
+            merged['ignored'] += len(uncertain_values)
+            fallback_note = (
+                f"Could not verify {len(uncertain_values)} timed-out value(s). "
+                "Please refresh and compare again."
+            )
+            merged['message'] = '; '.join([merged.get('message', ''), fallback_note]).strip('; ').strip()
+
+    if merged['ignored'] == 0:
+        merged['status'] = 'SUCCESS'
+    elif merged['status'] not in ('ERROR',):
+        merged['status'] = 'WARNING'
+
     return {
         'status': merged['status'],
         'message': merged['message'],
