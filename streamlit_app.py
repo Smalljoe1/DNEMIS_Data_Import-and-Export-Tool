@@ -240,27 +240,32 @@ def main_app():
                             st.session_state.school_code = str(primary_ou.get('code', '') or '')
                     st.caption("Aggregate fetch/export/import/push will use all selected schools.")
                 else:
-                    current_uid = str(st.session_state.get('org_unit_uid', '') or '')
-                    selected_idx = 0
-                    for idx, lbl in enumerate(labels):
-                        if str(ou_options[lbl].get('id', '') or '') == current_uid:
-                            selected_idx = idx
-                            break
-                    selected_ou_label = st.selectbox(
-                        "Level 5 school",
+                    default_uids = [uid for uid in st.session_state.get('selected_org_units', []) if uid in ou_label_by_uid]
+                    if not default_uids:
+                        current_uid = str(st.session_state.get('org_unit_uid', '') or '')
+                        default_uids = [current_uid] if current_uid in ou_label_by_uid else []
+                    default_labels = [ou_label_by_uid[uid] for uid in default_uids if uid in ou_label_by_uid]
+
+                    selected_labels = st.multiselect(
+                        "Level 5 schools",
                         options=labels,
-                        index=selected_idx,
-                        key="org_unit_select",
+                        default=default_labels,
+                        key="org_units_multi_select_events",
                     )
-                    selected_ou = ou_options[selected_ou_label]
-                    st.session_state.org_unit_uid = str(selected_ou.get('id', '') or '')
-                    st.session_state.selected_org_units = [st.session_state.org_unit_uid]
+                    selected_uids = [str(ou_options[lbl].get('id', '') or '') for lbl in selected_labels]
+                    st.session_state.selected_org_units = selected_uids
                     st.session_state.selected_org_unit_labels = {
-                        st.session_state.org_unit_uid: str(selected_ou.get('name', '') or '')
+                        str(ou_options[lbl].get('id', '') or ''): str(ou_options[lbl].get('name', '') or '')
+                        for lbl in selected_labels
                     }
-                    st.session_state.school_name = str(selected_ou.get('name', '') or st.session_state.school_name)
-                    st.session_state.school_code = str(selected_ou.get('code', '') or '')
-                    st.caption("Scoped to selected Level 5 org unit for fetch/export/import/push.")
+                    if selected_uids:
+                        primary_uid = selected_uids[0]
+                        primary_ou = next((x for x in level5_ous if str(x.get('id', '') or '') == primary_uid), None)
+                        st.session_state.org_unit_uid = primary_uid
+                        if primary_ou:
+                            st.session_state.school_name = str(primary_ou.get('name', '') or st.session_state.school_name)
+                            st.session_state.school_code = str(primary_ou.get('code', '') or '')
+                    st.caption("Events fetch/export/import/push will use all selected schools.")
 
         if st.session_state.data_mode == "Aggregate Forms":
             st.subheader("Select Dataset")
@@ -372,7 +377,7 @@ def main_app():
             _prog_changed = st.session_state.get('_last_program') != st.session_state.selected_program
             _stage_changed = st.session_state.get('_last_program_stage') != st.session_state.selected_program_stage
             _per_changed = st.session_state.get('_last_period_events') != str(st.session_state.selected_period)
-            _ou_changed = st.session_state.get('_last_org_unit_events') != st.session_state.org_unit_uid
+            _ou_changed = st.session_state.get('_last_org_units_events') != list(st.session_state.get('selected_org_units', []))
 
             if (_prog_changed or _stage_changed or _per_changed or _ou_changed) and st.session_state.get('event_has_unsaved_edits'):
                 st.warning("⚠️ You have unsaved event edits. Switching context will discard them.")
@@ -406,7 +411,7 @@ def main_app():
                         st.session_state['_last_program'] = st.session_state.selected_program
                         st.session_state['_last_program_stage'] = st.session_state.selected_program_stage
                         st.session_state['_last_period_events'] = str(st.session_state.selected_period)
-                        st.session_state['_last_org_unit_events'] = st.session_state.org_unit_uid
+                        st.session_state['_last_org_units_events'] = list(st.session_state.get('selected_org_units', []))
                         load_events_data()
                         st.rerun()
             elif _prog_changed or _stage_changed or _per_changed or _ou_changed:
@@ -415,7 +420,7 @@ def main_app():
                 st.session_state['_last_program'] = st.session_state.selected_program
                 st.session_state['_last_program_stage'] = st.session_state.selected_program_stage
                 st.session_state['_last_period_events'] = str(st.session_state.selected_period)
-                st.session_state['_last_org_unit_events'] = st.session_state.org_unit_uid
+                st.session_state['_last_org_units_events'] = list(st.session_state.get('selected_org_units', []))
                 if st.session_state.selected_program and st.session_state.selected_program_stage:
                     load_events_data()
 
@@ -1209,16 +1214,57 @@ def load_events_data():
         st.session_state.username,
         st.session_state.password
     )
-    events = dhis2.get_events(
-        st.session_state.org_unit_uid,
-        st.session_state.selected_program,
-        st.session_state.selected_program_stage,
-        start_date,
-        end_date,
-        st.session_state.username,
-        st.session_state.password
-    )
-    enrollment_uids = list({ev.get('enrollment', '') for ev in events if ev.get('enrollment', '')})
+    selected_org_uids = list(st.session_state.get('selected_org_units', []) or [st.session_state.org_unit_uid])
+    selected_org_uids = [str(x or '').strip() for x in selected_org_uids if str(x or '').strip()]
+    org_labels = st.session_state.get('selected_org_unit_labels', {}) or {}
+
+    events = []
+    enroll_attr_map = {}
+    program_tei_attr_map = {}
+    tei_uids_set = set()
+    enrollment_uids_set = set()
+
+    for org_uid in selected_org_uids:
+        org_events = dhis2.get_events(
+            org_uid,
+            st.session_state.selected_program,
+            st.session_state.selected_program_stage,
+            start_date,
+            end_date,
+            st.session_state.username,
+            st.session_state.password
+        )
+        for ev in org_events:
+            if not ev.get('orgUnit'):
+                ev['orgUnit'] = org_uid
+        events.extend(org_events)
+
+        enrollment_uids_set.update({ev.get('enrollment', '') for ev in org_events if ev.get('enrollment', '')})
+        tei_uids_set.update({ev.get('trackedEntityInstance', '') for ev in org_events if ev.get('trackedEntityInstance', '')})
+
+        org_enroll_attr_map = dhis2.get_program_enrollment_attribute_values(
+            org_uid,
+            st.session_state.selected_program,
+            st.session_state.username,
+            st.session_state.password
+        )
+        for tei, attrs in org_enroll_attr_map.items():
+            if tei not in enroll_attr_map:
+                enroll_attr_map[tei] = {}
+            enroll_attr_map[tei].update(attrs)
+
+        org_program_tei_attr_map = dhis2.get_program_tracked_entity_attribute_values(
+            org_uid,
+            st.session_state.selected_program,
+            st.session_state.username,
+            st.session_state.password
+        )
+        for tei, attrs in org_program_tei_attr_map.items():
+            if tei not in program_tei_attr_map:
+                program_tei_attr_map[tei] = {}
+            program_tei_attr_map[tei].update(attrs)
+
+    enrollment_uids = list(enrollment_uids_set)
     enrollment_details = dhis2.get_enrollment_details(
         enrollment_uids,
         st.session_state.username,
@@ -1235,26 +1281,14 @@ def load_events_data():
         st.session_state.username,
         st.session_state.password
     )
-    tei_uids = list({ev.get('trackedEntityInstance', '') for ev in events if ev.get('trackedEntityInstance', '')})
+    tei_uids = list(tei_uids_set)
     tei_attr_map = dhis2.get_tracked_entity_attribute_values(
         tei_uids,
         st.session_state.username,
         st.session_state.password
     )
-    enroll_attr_map = dhis2.get_program_enrollment_attribute_values(
-        st.session_state.org_unit_uid,
-        st.session_state.selected_program,
-        st.session_state.username,
-        st.session_state.password
-    )
     enroll_attr_map_by_tei = dhis2.get_program_enrollment_attribute_values_by_tei(
         tei_uids,
-        st.session_state.selected_program,
-        st.session_state.username,
-        st.session_state.password
-    )
-    program_tei_attr_map = dhis2.get_program_tracked_entity_attribute_values(
-        st.session_state.org_unit_uid,
         st.session_state.selected_program,
         st.session_state.username,
         st.session_state.password
@@ -1331,10 +1365,17 @@ def load_events_data():
     original_values = {}
     event_meta = {}
     rows_with_attr_values = 0
+    def _uid(val):
+        """Extract UID string from either a plain string or a DHIS2 {id:...} object."""
+        if isinstance(val, dict):
+            return val.get('id') or val.get('uid') or ''
+        return str(val or '').strip()
+
     for ev in events:
         event_id = ev.get('event', '')
         tei_uid = ev.get('trackedEntityInstance', '')
         enrollment_id = ev.get('enrollment', '')
+        event_org_uid = _uid(ev.get('orgUnit', st.session_state.org_unit_uid))
         enrollment_date_raw = enrollment_details.get(enrollment_id, {}).get('enrollmentDate', '')
         enrollment_date, _ = _normalize_event_date(enrollment_date_raw)
         value_map = {
@@ -1346,6 +1387,8 @@ def load_events_data():
         row = {
             'Template Row ID': event_id,
             'Event ID': event_id,
+            'Org Unit UID': event_org_uid,
+            'Org Unit': org_labels.get(event_org_uid, event_org_uid),
             'Person ID': tei_uid,
             'Event Date': ev.get('eventDate', ''),
             'Enrollment Date': enrollment_date,
@@ -1364,17 +1407,12 @@ def load_events_data():
             spec['deUID']: value_map.get(spec['deUID'], '')
             for spec in specs
         }
-        def _uid(val):
-            """Extract UID string from either a plain string or a DHIS2 {id:...} object."""
-            if isinstance(val, dict):
-                return val.get('id') or val.get('uid') or ''
-            return str(val or '').strip()
-
         event_meta[event_id] = {
             'event': event_id,
             'program': _uid(ev.get('program', st.session_state.selected_program)),
             'programStage': _uid(ev.get('programStage', st.session_state.selected_program_stage)),
-            'orgUnit': _uid(ev.get('orgUnit', st.session_state.org_unit_uid)),
+            'orgUnit': event_org_uid,
+            'orgUnitName': org_labels.get(event_org_uid, event_org_uid),
             'trackedEntityInstance': tei_uid,
             'enrollment': enrollment_id,
             'enrollmentDate': enrollment_date,
@@ -1543,6 +1581,10 @@ def push_events_to_dhis2(changes):
         if c.get('changeType') not in ('ENROLLMENT_DATE',) and not str(c.get('changeType', '')).startswith('CREATE_')
     ]
     enrollment_changes = [c for c in clean_changes if c.get('changeType') == 'ENROLLMENT_DATE']
+
+    if len(list(st.session_state.get('selected_org_units', []) or [])) > 1 and create_changes:
+        st.warning("CREATE_* rows are skipped in multi-school Events mode. Select one school to create new staff/event rows.")
+        create_changes = []
 
     grouped = {}
     for change in event_changes:
@@ -1961,6 +2003,8 @@ def display_events_interface():
         st.info("Select a Program and Program Stage in the sidebar to fetch events.")
         return
 
+    events_multi_scope = len(list(st.session_state.get('selected_org_units', []) or [])) > 1
+
     top_left, top_right = st.columns([1, 4])
     with top_left:
         if st.button("Refresh Events", key="refresh_events", type="primary"):
@@ -1970,7 +2014,10 @@ def display_events_interface():
                 st.rerun()
 
     if not st.session_state.event_rows:
-        st.info("No existing events found for this school, program stage, and period. You can still create new staff enrollment/event rows below.")
+        if events_multi_scope:
+            st.info("No existing events found for the selected schools, program stage, and period.")
+        else:
+            st.info("No existing events found for this school, program stage, and period. You can still create new staff enrollment/event rows below.")
 
     attr_stats = st.session_state.get('event_attr_stats', {})
     if st.session_state.get('event_attr_columns'):
@@ -2006,7 +2053,10 @@ def display_events_interface():
         return val
 
     # Build working table and apply any imported template overrides.
-    df = pd.DataFrame(st.session_state.event_rows + _build_create_template_rows(attr_specs, specs))
+    if events_multi_scope:
+        df = pd.DataFrame(st.session_state.event_rows)
+    else:
+        df = pd.DataFrame(st.session_state.event_rows + _build_create_template_rows(attr_specs, specs))
     overrides = st.session_state.get('event_template_overrides', {})
     if overrides:
         for idx in df.index:
@@ -2020,10 +2070,11 @@ def display_events_interface():
     with tcol1:
         if st.button("Download Events Template (CSV)", key="download_events_template"):
             csv = df.to_csv(index=False).encode('utf-8')
+            scope_tag = "multi" if events_multi_scope else (st.session_state.school_code or 'school')
             st.download_button(
                 label="Download Events CSV",
                 data=csv,
-                file_name=f"events_template_{st.session_state.school_code or 'school'}_{st.session_state.selected_period}.csv",
+                file_name=f"events_template_{scope_tag}_{st.session_state.selected_period}.csv",
                 mime='text/csv',
                 key="download_events_template_file"
             )
@@ -2059,6 +2110,7 @@ def display_events_interface():
                     else:
                         new_overrides = {}
                         skipped_unknown_events = 0
+                        skipped_create_rows_multi = 0
                         non_stage_changes = 0
                         invalid_event_date_rows = 0
                         invalid_enrollment_date_rows = 0
@@ -2081,6 +2133,9 @@ def display_events_interface():
                                 continue
 
                             is_create_row = str(row_id).startswith('__NEW__')
+                            if is_create_row and events_multi_scope:
+                                skipped_create_rows_multi += 1
+                                continue
                             current_row = current_row_map.get(row_id)
                             if current_row is not None:
                                 for col_name in non_stage_cols:
@@ -2183,6 +2238,10 @@ def display_events_interface():
                                 f"Loaded template values for {len(new_overrides)} event(s), {changed_cells} changed field(s)."
                                 + (f" Skipped {skipped_unknown_events} unknown event row(s)." if skipped_unknown_events else "")
                             )
+                            if skipped_create_rows_multi:
+                                st.warning(
+                                    f"Skipped {skipped_create_rows_multi} __NEW__ row(s) because multi-school mode supports updates only."
+                                )
                             if invalid_event_date_rows:
                                 st.warning(
                                     f"Skipped {invalid_event_date_rows} row(s) with invalid Event Date format. "
@@ -2215,14 +2274,20 @@ def display_events_interface():
             except Exception as e:
                 st.error(f"Failed to process uploaded Events CSV: {e}")
     with tcol3:
-        st.info(
-            "Download the school events template, edit existing rows to update records, or fill the blank __NEW__ rows "
-            "to create new staff, enrollment, and first event for this school."
-        )
+        if events_multi_scope:
+            st.info(
+                "Download and re-upload events for the selected schools. Existing event updates are supported across schools. "
+                "New __NEW__ row creation is disabled in multi-school mode."
+            )
+        else:
+            st.info(
+                "Download the school events template, edit existing rows to update records, or fill the blank __NEW__ rows "
+                "to create new staff, enrollment, and first event for this school."
+            )
 
     st.markdown("---")
     editor_key = f"events_editor_{st.session_state.get('events_editor_rev', 0)}"
-    disabled_cols = ['Template Row ID', 'Event ID', 'Person ID']
+    disabled_cols = ['Template Row ID', 'Event ID', 'Org Unit UID', 'Org Unit', 'Person ID']
     total_rows = len(df)
     p1, p2, p3 = st.columns([1, 1, 3])
     with p1:
@@ -2285,6 +2350,9 @@ def display_events_interface():
         person_name_raw = row.get(name_col, '') if name_col else ''
         person_name = '' if (pd.isna(person_name_raw) if not isinstance(person_name_raw, str) else False) else str(person_name_raw or '').strip()
         is_create_row = row_id.startswith('__NEW__')
+
+        if is_create_row and events_multi_scope:
+            continue
 
         if is_create_row:
             if not _row_has_create_values(row, attr_specs, specs):
@@ -2514,6 +2582,8 @@ def display_events_interface():
             row_ctx = event_row_map.get(row_id)
             event_id = str(row_ctx.get('Event ID', '') or '') if row_ctx is not None else ''
             is_create_row = str(row_id).startswith('__NEW__')
+            if is_create_row and events_multi_scope:
+                continue
             original_for_event = original_values.get(event_id, {})
             person_id = str(row_ctx.get('Person ID', '') or '') if row_ctx is not None else ''
             person_name = str(row_ctx.get(name_col, '') or '') if (row_ctx is not None and name_col) else ''
