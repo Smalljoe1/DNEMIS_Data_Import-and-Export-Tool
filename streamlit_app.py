@@ -1549,7 +1549,29 @@ def push_events_to_dhis2(changes):
 
         created_rows = 0
         unverified_created_rows = 0
-        for create_group in valid_create_groups:
+
+        remaining_create_groups = list(valid_create_groups)
+        bulk_bundle_candidates = [g for g in valid_create_groups if not str(g.get('personId', '') or '').strip()]
+        if bulk_bundle_candidates:
+            bulk_bundle_result = dhis2.create_tracker_bundle_bulk(
+                tracked_entity_type_uid=program_meta.get('trackedEntityType', ''),
+                program_uid=st.session_state.selected_program,
+                program_stage_uid=st.session_state.selected_program_stage,
+                org_unit_uid=st.session_state.org_unit_uid,
+                create_groups=bulk_bundle_candidates,
+                username=st.session_state.username,
+                password=st.session_state.password,
+            )
+            if bulk_bundle_result.get('status') in ('OK', 'WARNING'):
+                created_rows += len(bulk_bundle_candidates)
+                remaining_create_groups = [
+                    g for g in valid_create_groups
+                    if str(g.get('personId', '') or '').strip()
+                ]
+                if bulk_bundle_result.get('errors'):
+                    st.warning(f"⚠️ Bulk tracker bundle warnings: {'; '.join(bulk_bundle_result['errors'][:3])}")
+
+        for create_group in remaining_create_groups:
             tei_uid = str(create_group.get('personId', '') or '').strip()
             person_label = create_group['personName'] or create_group['rowId']
 
@@ -2051,8 +2073,32 @@ def display_events_interface():
     st.markdown("---")
     editor_key = f"events_editor_{st.session_state.get('events_editor_rev', 0)}"
     disabled_cols = ['Template Row ID', 'Event ID', 'Person ID']
-    edited_df = st.data_editor(
-        df,
+    total_rows = len(df)
+    p1, p2, p3 = st.columns([1, 1, 3])
+    with p1:
+        page_size = st.selectbox(
+            "Rows per page",
+            options=[100, 250, 500, 1000],
+            index=1,
+            key="events_page_size",
+        )
+    max_page = max(1, (total_rows + page_size - 1) // page_size)
+    with p2:
+        current_page = int(st.number_input(
+            "Page",
+            min_value=1,
+            max_value=max_page,
+            value=min(int(st.session_state.get('events_page', 1) or 1), max_page),
+            step=1,
+            key="events_page",
+        ))
+    start_row = (current_page - 1) * page_size
+    end_row = min(start_row + page_size, total_rows)
+    st.caption(f"Showing rows {start_row + 1}-{end_row} of {total_rows}")
+
+    page_df = df.iloc[start_row:end_row].copy()
+    edited_page_df = st.data_editor(
+        page_df,
         key=editor_key,
         disabled=disabled_cols,
         column_config={
@@ -2067,12 +2113,17 @@ def display_events_interface():
         num_rows='fixed'
     )
 
+    # Merge page edits back onto the full table so fallback review logic can still see all rows.
+    edited_df = df.copy()
+    edited_df.loc[edited_page_df.index, edited_page_df.columns] = edited_page_df
+
     changes = []
     original_values = st.session_state.event_original_values
     event_attr_cols = st.session_state.get('event_attr_columns', [])
     attr_specs = st.session_state.get('event_attr_specs', [])
     name_col = next((c for c in event_attr_cols if 'name' in c.lower()), '')
-    for _, row in edited_df.iterrows():
+    existing_row_ctx = {}
+    for row_idx, row in edited_page_df.iterrows():
         row_id = str(row.get('Template Row ID', '') or '').strip()
         event_id = row.get('Event ID', '')
         if not row_id:
@@ -2258,26 +2309,47 @@ def display_events_interface():
                 'changeType': 'EVENT_STATUS',
                 'operation': 'UPDATE',
             })
+        existing_row_ctx[row_idx] = {
+            'eventId': event_id,
+            'templateRowId': row_id,
+            'personId': person_id,
+            'personName': person_name,
+            'enrollmentId': enrollment_id,
+            'eventDate': row.get('Event Date', ''),
+        }
 
+    # Vectorized data value diff detection for existing rows on the current page.
+    if existing_row_ctx:
+        existing_idx = list(existing_row_ctx.keys())
+        existing_df = edited_page_df.loc[existing_idx].copy()
+        existing_df['__eventId'] = existing_df['Event ID'].astype(str).str.strip()
         for col_name, spec in column_to_spec.items():
-            new_raw = row.get(col_name, '')
+            de_uid = spec['deUID']
             de_type = spec.get('deType', '')
-            new_val = _normalize_event_compare_value(new_raw, de_type)
-            old_val = _normalize_event_compare_value(original_for_event.get(spec['deUID'], ''), de_type)
-            if new_val != old_val:
+            new_series = existing_df[col_name].map(lambda v: _normalize_event_compare_value(v, de_type))
+            old_series = existing_df['__eventId'].map(
+                lambda eid: _normalize_event_compare_value(original_values.get(eid, {}).get(de_uid, ''), de_type)
+            )
+            diff_mask = new_series != old_series
+            if not bool(diff_mask.any()):
+                continue
+            for idx in existing_df.index[diff_mask]:
+                ctx = existing_row_ctx.get(idx, {})
+                if not ctx.get('eventId'):
+                    continue
                 changes.append({
-                    'eventId': event_id,
-                    'templateRowId': row_id,
-                    'personId': person_id,
-                    'personName': person_name,
-                    'enrollmentId': enrollment_id,
-                    'eventDate': row.get('Event Date', ''),
+                    'eventId': ctx['eventId'],
+                    'templateRowId': ctx['templateRowId'],
+                    'personId': ctx['personId'],
+                    'personName': ctx['personName'],
+                    'enrollmentId': ctx['enrollmentId'],
+                    'eventDate': ctx['eventDate'],
                     'templateField': col_name,
-                    'deUID': spec['deUID'],
+                    'deUID': de_uid,
                     'deName': spec['deName'],
-                    'deType': spec.get('deType', ''),
-                    'oldValue': old_val,
-                    'newValue': new_val,
+                    'deType': de_type,
+                    'oldValue': old_series.loc[idx],
+                    'newValue': new_series.loc[idx],
                     'changeType': 'DATA_VALUE',
                     'operation': 'UPDATE',
                 })

@@ -630,6 +630,112 @@ def create_tracker_bundle(
     return result
 
 
+def create_tracker_bundle_bulk(
+    tracked_entity_type_uid: str,
+    program_uid: str,
+    program_stage_uid: str,
+    org_unit_uid: str,
+    create_groups: list,
+    username: str,
+    password: str,
+) -> dict:
+    """Create many rows in one /tracker call.
+
+    Each item in create_groups accepts:
+      personId (optional), enrollmentDate, eventDate, attributes, dataValues
+    """
+    if not create_groups:
+        return {'status': 'OK', 'errors': [], 'response': {}, 'submitted': 0}
+
+    tracked_entities = []
+    enrollments = []
+    for row in create_groups:
+        tei_uid = str(row.get('personId', '') or '').strip()
+        enrollment_date = str(row.get('enrollmentDate', '') or '').strip()
+        event_date = str(row.get('eventDate', '') or '').strip()
+        attributes = row.get('attributes', []) or []
+        data_values = row.get('dataValues', []) or []
+
+        event_payload = {
+            'program': program_uid,
+            'programStage': program_stage_uid,
+            'orgUnit': org_unit_uid,
+            'eventDate': event_date,
+            'status': 'ACTIVE',
+            'dataValues': data_values,
+        }
+
+        if tei_uid:
+            enrollments.append({
+                'trackedEntity': tei_uid,
+                'program': program_uid,
+                'orgUnit': org_unit_uid,
+                'enrollmentDate': enrollment_date,
+                'incidentDate': enrollment_date,
+                'status': 'ACTIVE',
+                'events': [{**event_payload, 'trackedEntity': tei_uid}],
+            })
+        else:
+            tracked_entities.append({
+                'trackedEntityType': tracked_entity_type_uid,
+                'orgUnit': org_unit_uid,
+                'attributes': attributes,
+                'enrollments': [{
+                    'program': program_uid,
+                    'orgUnit': org_unit_uid,
+                    'enrollmentDate': enrollment_date,
+                    'incidentDate': enrollment_date,
+                    'status': 'ACTIVE',
+                    'events': [event_payload],
+                }],
+            })
+
+    payload = {}
+    if tracked_entities:
+        payload['trackedEntities'] = tracked_entities
+    if enrollments:
+        payload['enrollments'] = enrollments
+
+    resp = requests.post(
+        f'{DHIS2_BASE}/tracker',
+        auth=(username, password),
+        json=payload,
+        headers={**_JSON_HEADERS, 'Content-Type': 'application/json'},
+        timeout=TIMEOUT_LONG,
+    )
+
+    out = {
+        'status': 'ERROR',
+        'errors': [],
+        'response': {},
+        'submitted': len(create_groups),
+    }
+    if resp.status_code == 404:
+        out['status'] = 'NOT_FOUND'
+        return out
+
+    try:
+        body = resp.json()
+    except ValueError:
+        out['errors'].append(f"HTTP {resp.status_code}: {(resp.text or '')[:300]}")
+        return out
+
+    response = body.get('response', body)
+    out['response'] = response
+    validation = response.get('validationReport', {}) if isinstance(response, dict) else {}
+    for err in validation.get('errorReports', []) or []:
+        out['errors'].append(str(err.get('message', '') or err))
+
+    api_status = str(response.get('status', body.get('status', ''))).upper() if isinstance(response, dict) else str(body.get('status', '')).upper()
+    if api_status in ('OK', 'SUCCESS'):
+        out['status'] = 'OK'
+    elif api_status == 'WARNING':
+        out['status'] = 'WARNING'
+    else:
+        out['status'] = 'ERROR'
+    return out
+
+
 def get_tracked_entity_attribute_values(tei_uids: list, username: str, password: str) -> dict:
     """Return mapping: {teiUID: {attributeUID: value}} for TEI attributes."""
     out = {}
@@ -913,60 +1019,127 @@ def get_program_tracked_entity_attribute_values(org_unit_uid: str, program_uid: 
 
 
 def get_events(org_unit_uid: str, program_uid: str, program_stage_uid: str,
-               start_date: str, end_date: str, username: str, password: str) -> list:
-    """Fetch events for org unit + program + stage within a date range."""
-    params = {
+               start_date: str, end_date: str, username: str, password: str,
+               page_size: int = 250) -> list:
+    """Fetch events for org unit + program + stage within a date range using pagination."""
+    params_base = {
         'orgUnit': org_unit_uid,
         'ouMode': 'SELECTED',
         'program': program_uid,
         'programStage': program_stage_uid,
         'startDate': start_date,
         'endDate': end_date,
-        'skipPaging': 'true',
         'fields': 'event,eventDate,completedDate,status,program,programStage,orgUnit,enrollment,trackedEntityInstance,dataValues[dataElement,value]',
     }
-    resp = requests.get(
-        f'{DHIS2_BASE}/events',
-        auth=(username, password),
-        params=params,
-        headers=_JSON_HEADERS,
-        timeout=TIMEOUT_LONG,
-    )
-    resp.raise_for_status()
-    return resp.json().get('events', [])
+    all_events = []
+    page = 1
+    page_size = max(50, int(page_size or 250))
+    while True:
+        params = {
+            **params_base,
+            'page': page,
+            'pageSize': page_size,
+        }
+        resp = requests.get(
+            f'{DHIS2_BASE}/events',
+            auth=(username, password),
+            params=params,
+            headers=_JSON_HEADERS,
+            timeout=TIMEOUT_LONG,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        batch = body.get('events', [])
+        if not batch:
+            break
+        all_events.extend(batch)
+        pager = body.get('pager', {}) if isinstance(body.get('pager', {}), dict) else {}
+        page_count = int(pager.get('pageCount', 0) or 0)
+        if page_count and page >= page_count:
+            break
+        if len(batch) < page_size and not page_count:
+            break
+        page += 1
+    return all_events
 
 
 def get_enrollment_details(enrollment_uids: list, username: str, password: str) -> dict:
     """Return {enrollmentUID: {enrollmentDate, incidentDate, status, program, orgUnit, trackedEntityInstance}}."""
     out = {}
-    for enr_uid in [x for x in enrollment_uids if x]:
+
+    def _uid(raw):
+        if isinstance(raw, dict):
+            return str(raw.get('id', '') or raw.get('uid', '') or '')
+        return str(raw or '')
+
+    clean_uids = [x for x in enrollment_uids if x]
+    resolved = set()
+
+    for batch in _chunked(clean_uids, chunk_size=50):
+        in_clause = '[' + ','.join(batch) + ']'
         try:
             data = _get(
-                f'/enrollments/{enr_uid}',
+                '/enrollments',
                 username,
                 password,
                 params={
+                    'paging': 'false',
+                    'filter': f'enrollment:in:{in_clause}',
                     'fields': 'enrollment,enrollmentDate,incidentDate,status,program,orgUnit,trackedEntityInstance',
                 },
+                timeout=TIMEOUT_LONG,
             )
+            for item in data.get('enrollments', []) or []:
+                enr_id = _uid(item.get('enrollment', ''))
+                if not enr_id:
+                    continue
+                out[enr_id] = {
+                    'enrollmentDate': str(item.get('enrollmentDate', '') or ''),
+                    'incidentDate': str(item.get('incidentDate', '') or ''),
+                    'status': str(item.get('status', '') or ''),
+                    'program': _uid(item.get('program', '')),
+                    'orgUnit': _uid(item.get('orgUnit', '')),
+                    'trackedEntityInstance': _uid(item.get('trackedEntityInstance', '')),
+                }
+                resolved.add(enr_id)
         except requests.HTTPError:
-            continue
+            # Fall back to per-enrollment retrieval for compatibility.
+            pass
 
-        enr_id = str(data.get('enrollment', '') or enr_uid)
-        if enr_id:
-            out[enr_id] = {
-                'enrollmentDate': str(data.get('enrollmentDate', '') or ''),
-                'incidentDate': str(data.get('incidentDate', '') or ''),
-                'status': str(data.get('status', '') or ''),
-                'program': str(data.get('program', '') or ''),
-                'orgUnit': str(data.get('orgUnit', '') or ''),
-                'trackedEntityInstance': str(data.get('trackedEntityInstance', '') or ''),
-            }
+        for enr_uid in batch:
+            if enr_uid in resolved:
+                continue
+            try:
+                data = _get(
+                    f'/enrollments/{enr_uid}',
+                    username,
+                    password,
+                    params={
+                        'fields': 'enrollment,enrollmentDate,incidentDate,status,program,orgUnit,trackedEntityInstance',
+                    },
+                    timeout=TIMEOUT_LONG,
+                )
+            except requests.HTTPError:
+                continue
+
+            enr_id = _uid(data.get('enrollment', '') or enr_uid)
+            if enr_id:
+                out[enr_id] = {
+                    'enrollmentDate': str(data.get('enrollmentDate', '') or ''),
+                    'incidentDate': str(data.get('incidentDate', '') or ''),
+                    'status': str(data.get('status', '') or ''),
+                    'program': _uid(data.get('program', '')),
+                    'orgUnit': _uid(data.get('orgUnit', '')),
+                    'trackedEntityInstance': _uid(data.get('trackedEntityInstance', '')),
+                }
     return out
 
 
 def push_event_updates(event_updates: list, username: str, password: str) -> dict:
     """Push event updates. event_updates is a list of full event payload objects."""
+    if not event_updates:
+        return {'status': 'SUCCESS', 'message': '', 'response': {'importCount': {'imported': 0, 'updated': 0, 'ignored': 0}}}
+
     def _extract_error(resp: requests.Response) -> str:
         try:
             body = resp.json()
@@ -1013,12 +1186,36 @@ def push_event_updates(event_updates: list, username: str, password: str) -> dic
             _collect_conflicts(body)
         return '; '.join(parts)[:300] if parts else (resp.text or '').strip()[:300]
 
-    def _run_put_fallback() -> dict:
+    def _extract_failed_event_ids(body: dict) -> list:
+        failed = []
+        if not isinstance(body, dict):
+            return failed
+        response = body.get('response', {}) if isinstance(body.get('response', {}), dict) else {}
+        summaries = (response.get('importSummaries') or body.get('importSummaries') or [])
+        for summary in summaries:
+            if not isinstance(summary, dict):
+                continue
+            imp = summary.get('importCount', {}) if isinstance(summary.get('importCount', {}), dict) else {}
+            ignored = int(imp.get('ignored', 0) or 0)
+            status = str(summary.get('status', '')).upper()
+            if ignored <= 0 and status not in ('ERROR', 'WARNING'):
+                continue
+            ref = (
+                summary.get('reference')
+                or summary.get('event')
+                or summary.get('uid')
+                or summary.get('id')
+            )
+            if ref:
+                failed.append(str(ref))
+        return failed
+
+    def _run_put_fallback(target_updates: list) -> dict:
         updated = 0
         ignored = 0
         errors = []
 
-        for item in event_updates:
+        for item in target_updates:
             ev_uid = str(item.get('event', '') or '')
             if not ev_uid:
                 ignored += 1
@@ -1088,30 +1285,70 @@ def push_event_updates(event_updates: list, username: str, password: str) -> dic
             },
         }
 
-    payload = {'events': event_updates}
-    try:
-        resp = requests.post(
-            f'{DHIS2_BASE}/events?strategy=UPDATE',
-            auth=(username, password),
-            json=payload,
-            headers={**_JSON_HEADERS, 'Content-Type': 'application/json'},
-            timeout=TIMEOUT_LONG,
-        )
-        resp.raise_for_status()
-        bulk_result = resp.json()
+    total_updated = 0
+    total_ignored = 0
+    all_errors = []
+    batch_size = 200
 
-        # Some DHIS2 instances return HTTP 200 with WARNING/ignored in import summary.
-        response_block = bulk_result.get('response', {}) if isinstance(bulk_result.get('response', {}), dict) else {}
-        imp = bulk_result.get('importSummary') or response_block.get('importSummary') or response_block or bulk_result
-        import_count = imp.get('importCount', {}) if isinstance(imp, dict) else {}
-        ignored = int(import_count.get('ignored', 0) or 0)
-        status = str(imp.get('status', bulk_result.get('status', ''))).upper() if isinstance(imp, dict) else str(bulk_result.get('status', '')).upper()
+    for batch in _chunked(event_updates, chunk_size=batch_size):
+        payload = {'events': batch}
+        try:
+            resp = requests.post(
+                f'{DHIS2_BASE}/events?strategy=UPDATE',
+                auth=(username, password),
+                json=payload,
+                headers={**_JSON_HEADERS, 'Content-Type': 'application/json'},
+                timeout=TIMEOUT_LONG,
+            )
+            resp.raise_for_status()
+            bulk_result = resp.json()
 
-        if ignored > 0 or status in ('WARNING', 'ERROR'):
-            return _run_put_fallback()
-        return bulk_result
-    except requests.HTTPError:
-        return _run_put_fallback()
+            response_block = bulk_result.get('response', {}) if isinstance(bulk_result.get('response', {}), dict) else {}
+            imp = bulk_result.get('importSummary') or response_block.get('importSummary') or response_block or bulk_result
+            import_count = imp.get('importCount', {}) if isinstance(imp, dict) else {}
+            ignored = int(import_count.get('ignored', 0) or 0)
+            updated = int(import_count.get('updated', 0) or 0)
+            imported = int(import_count.get('imported', 0) or 0)
+            status = str(imp.get('status', bulk_result.get('status', ''))).upper() if isinstance(imp, dict) else str(bulk_result.get('status', '')).upper()
+            batch_updated = updated + imported
+
+            if ignored > 0 or status in ('WARNING', 'ERROR'):
+                failed_ids = set(_extract_failed_event_ids(bulk_result))
+                if failed_ids:
+                    failed_batch = [item for item in batch if str(item.get('event', '') or '') in failed_ids]
+                    total_updated += batch_updated
+                else:
+                    failed_batch = list(batch)
+                fallback_result = _run_put_fallback(failed_batch)
+                fb_imp = fallback_result.get('response', {}).get('importCount', {}) if isinstance(fallback_result.get('response', {}), dict) else {}
+                total_updated += int(fb_imp.get('updated', 0) or 0)
+                total_ignored += int(fb_imp.get('ignored', 0) or 0)
+                msg = str(fallback_result.get('message', '') or '').strip()
+                if msg:
+                    all_errors.append(msg)
+            else:
+                total_updated += batch_updated
+        except requests.HTTPError:
+            fallback_result = _run_put_fallback(batch)
+            fb_imp = fallback_result.get('response', {}).get('importCount', {}) if isinstance(fallback_result.get('response', {}), dict) else {}
+            total_updated += int(fb_imp.get('updated', 0) or 0)
+            total_ignored += int(fb_imp.get('ignored', 0) or 0)
+            msg = str(fallback_result.get('message', '') or '').strip()
+            if msg:
+                all_errors.append(msg)
+
+    status = 'SUCCESS' if total_ignored == 0 else 'WARNING'
+    return {
+        'status': status,
+        'message': '; '.join(all_errors[:10]),
+        'response': {
+            'importCount': {
+                'imported': 0,
+                'updated': total_updated,
+                'ignored': total_ignored,
+            }
+        },
+    }
 
 
 def push_enrollment_updates(enrollment_updates: list, username: str, password: str) -> dict:
