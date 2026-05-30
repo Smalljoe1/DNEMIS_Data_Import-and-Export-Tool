@@ -762,25 +762,20 @@ def compare_data():
     duplicate_rows_removed = 0
     for el in elements:
         sig = _element_semantic_signature(el)
-        key = f"{el['deUID']}|{el['cocUID']}"
-        in_values = key in dhis2_values_uid
-        
+
         if sig not in dedup:
             dedup[sig] = el
             continue
         
         duplicate_rows_removed += 1
         current = dedup[sig]
-        current_key = f"{current['deUID']}|{current['cocUID']}"
-        current_in_values = current_key in dhis2_values_uid
-        
-        if in_values and not current_in_values:
+
+        # At this stage we haven't fetched org-specific values yet, so choose a stable
+        # representative row for duplicate metadata definitions.
+        current_is_default = (current.get('cocUID') == 'HllvX50cXC0')
+        candidate_is_default = (el.get('cocUID') == 'HllvX50cXC0')
+        if candidate_is_default and not current_is_default:
             dedup[sig] = el
-        elif not current_in_values and not in_values:
-            current_is_default = (current.get('cocUID') == 'HllvX50cXC0')
-            candidate_is_default = (el.get('cocUID') == 'HllvX50cXC0')
-            if candidate_is_default and not current_is_default:
-                dedup[sig] = el
     
     elements = list(dedup.values())
     
