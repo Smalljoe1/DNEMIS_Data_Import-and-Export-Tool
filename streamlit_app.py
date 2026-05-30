@@ -653,6 +653,18 @@ def main_app():
                             elif de_type in bool_types:
                                 if raw.lower() not in ('true', 'false', '1', '0', 'yes', 'no'):
                                     err = f"Expected boolean, got '{raw}'"
+                            elif de_type == 'DATE':
+                                normalized_date, parse_issue = _normalize_aggregate_date(raw)
+                                if parse_issue:
+                                    err = parse_issue
+                                else:
+                                    raw = normalized_date
+                            elif de_type == 'DATETIME':
+                                normalized_datetime, parse_issue = _normalize_aggregate_datetime(raw)
+                                if parse_issue:
+                                    err = parse_issue
+                                else:
+                                    raw = normalized_datetime
                             if err:
                                 errors.append({
                                     'Row': i + 2,
@@ -3035,6 +3047,58 @@ _NUMERIC_TYPES = {'INTEGER', 'INTEGER_POSITIVE', 'INTEGER_NEGATIVE',
 _BOOL_TYPES = {'BOOLEAN', 'TRUE_ONLY'}
 
 
+def _normalize_aggregate_date(value):
+    """Normalize aggregate date input to YYYY-MM-DD.
+
+    Accepts YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY and ISO datetime values.
+    """
+    text = str(value or '').strip()
+    if not text:
+        return '', 'Date value is empty'
+
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', text):
+        return text, None
+
+    if re.fullmatch(r'\d{2}[/-]\d{2}[/-]\d{4}', text):
+        fmt = '%d/%m/%Y' if '/' in text else '%d-%m-%Y'
+        try:
+            return datetime.strptime(text, fmt).date().isoformat(), None
+        except ValueError:
+            return '', f"Expected a valid date (got '{text}')"
+
+    try:
+        iso_text = text.replace('Z', '+00:00')
+        return datetime.fromisoformat(iso_text).date().isoformat(), None
+    except ValueError:
+        return '', f"Expected date in YYYY-MM-DD or DD/MM/YYYY format (got '{text}')"
+
+
+def _normalize_aggregate_datetime(value):
+    """Normalize aggregate datetime input to YYYY-MM-DDTHH:MM:SS."""
+    text = str(value or '').strip()
+    if not text:
+        return '', 'Datetime value is empty'
+
+    # Accept ISO-like values and plain date values.
+    iso_candidate = text.replace(' ', 'T').replace('Z', '+00:00')
+    try:
+        parsed = datetime.fromisoformat(iso_candidate)
+        return parsed.strftime('%Y-%m-%dT%H:%M:%S'), None
+    except ValueError:
+        pass
+
+    # Accept DD/MM/YYYY[ HH:MM[:SS]] and DD-MM-YYYY[ HH:MM[:SS]].
+    for fmt in ('%d/%m/%Y %H:%M:%S', '%d/%m/%Y %H:%M', '%d/%m/%Y',
+                '%d-%m-%Y %H:%M:%S', '%d-%m-%Y %H:%M', '%d-%m-%Y'):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.strftime('%Y-%m-%dT%H:%M:%S'), None
+        except ValueError:
+            continue
+
+    return '', f"Expected datetime in ISO, DD/MM/YYYY HH:MM[:SS], or DD-MM-YYYY HH:MM[:SS] format (got '{text}')"
+
+
 def _validate_push_entries(entries, rows):
     """
     Run data-quality checks on entries before pushing.
@@ -3078,6 +3142,20 @@ def _validate_push_entries(entries, rows):
         elif de_type in _BOOL_TYPES:
             if val.lower() not in ('true', 'false', '1', '0', 'yes', 'no'):
                 issue = f"Expected true/false (got '{val}')"
+        elif de_type == 'DATE':
+            normalized_date, parse_issue = _normalize_aggregate_date(val)
+            if parse_issue:
+                issue = parse_issue
+            else:
+                entry['value'] = normalized_date
+                val = normalized_date
+        elif de_type == 'DATETIME':
+            normalized_datetime, parse_issue = _normalize_aggregate_datetime(val)
+            if parse_issue:
+                issue = parse_issue
+            else:
+                entry['value'] = normalized_datetime
+                val = normalized_datetime
 
         if issue:
             issues.append({'Data Element': name, 'Value': val, 'Type': de_type, 'Issue': issue})
