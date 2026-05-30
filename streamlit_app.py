@@ -55,6 +55,7 @@ def init_session_state():
         'event_attr_columns': [],
         'event_attr_stats': {},
         'event_template_overrides': {},
+        'event_import_create_changes': [],
         'event_last_uploaded_template_sig': '',
         'event_show_review': False,
         'event_has_unsaved_edits': False,
@@ -1198,6 +1199,7 @@ def load_events_data():
         st.session_state.event_attr_columns = []
         st.session_state.event_attr_stats = {}
         st.session_state.event_template_overrides = {}
+        st.session_state.event_import_create_changes = []
         return
 
     year = str(st.session_state.selected_period)
@@ -1434,6 +1436,7 @@ def load_events_data():
         'program_tei_hits': program_tei_hit_count,
     }
     st.session_state.event_template_overrides = {}
+    st.session_state.event_import_create_changes = []
     st.session_state.event_show_review = False
     st.session_state.event_has_unsaved_edits = False
 
@@ -1663,6 +1666,7 @@ def push_events_to_dhis2(changes):
         existing_person_id = next((str(ch.get('newValue', '') or '').strip() for ch in row_changes if ch.get('changeType') == 'CREATE_PERSON_ID'), '')
         event_date = next((str(ch.get('newValue', '') or '') for ch in row_changes if ch.get('changeType') == 'CREATE_EVENT_DATE'), '')
         enrollment_date = next((str(ch.get('newValue', '') or '') for ch in row_changes if ch.get('changeType') == 'CREATE_ENROLLMENT_DATE'), '')
+        event_only = any(bool(ch.get('eventOnly', False)) for ch in row_changes)
         attr_changes = [ch for ch in row_changes if ch.get('changeType') == 'CREATE_ATTRIBUTE']
         data_value_changes = [ch for ch in row_changes if ch.get('changeType') == 'CREATE_DATA_VALUE']
 
@@ -1681,7 +1685,7 @@ def push_events_to_dhis2(changes):
             if missing_required:
                 create_issues.append({'Event ID': '', 'Data Element': 'Attributes', 'Value': person_name or row_id, 'Type': 'CREATE', 'Issue': f"Missing required attributes: {', '.join(missing_required)}"})
                 continue
-        if not enrollment_date:
+        if not enrollment_date and not existing_person_id:
             create_issues.append({'Event ID': '', 'Data Element': 'Enrollment Date', 'Value': person_name or row_id, 'Type': 'CREATE', 'Issue': 'Enrollment Date is required for new rows'})
             continue
         if not event_date:
@@ -1697,6 +1701,7 @@ def push_events_to_dhis2(changes):
             'personId': existing_person_id,
             'eventDate': event_date,
             'enrollmentDate': enrollment_date,
+            'eventOnly': event_only,
             'attributes': [
                 {
                     'attribute': ch['attrUID'],
@@ -1761,6 +1766,7 @@ def push_events_to_dhis2(changes):
         for create_group in remaining_create_groups:
             tei_uid = str(create_group.get('personId', '') or '').strip()
             person_label = create_group['personName'] or create_group['rowId']
+            event_only = bool(create_group.get('eventOnly', False))
 
             # ── If TEI already exists, resolve enrollment then create event only ──
             if tei_uid:
@@ -1801,8 +1807,15 @@ def push_events_to_dhis2(changes):
                     created_rows += 1
                     continue
                 # No existing enrollment — fall through to create enrollment + event below
+                if event_only:
+                    st.warning(f"Skipped event-only import row for {person_label}: no enrollment found for Person ID {tei_uid}.")
+                    continue
 
             # ── Try new single-call /tracker bundle (TEI + enrollment + event) ──
+            if event_only:
+                st.warning(f"Skipped event-only import row for {person_label}: Person ID is missing.")
+                continue
+
             bundle_result = dhis2.create_tracker_bundle(
                 tracked_entity_type_uid=program_meta.get('trackedEntityType', ''),
                 program_uid=st.session_state.selected_program,
@@ -2104,8 +2117,12 @@ def display_events_interface():
                         st.error("CSV contains no editable stage/date columns for this selected program stage.")
                     else:
                         new_overrides = {}
+                        imported_create_changes = []
                         skipped_unknown_events = 0
                         skipped_create_rows_multi = 0
+                        skipped_unknown_missing_person = 0
+                        skipped_unknown_missing_values = 0
+                        skipped_unknown_invalid_date = 0
                         non_stage_changes = 0
                         invalid_event_date_rows = 0
                         invalid_enrollment_date_rows = 0
@@ -2180,7 +2197,94 @@ def display_events_interface():
                                 continue
 
                             if event_id not in valid_event_ids:
-                                skipped_unknown_events += 1
+                                # Cross-period import support: convert unknown Event IDs into
+                                # event-only creates for existing persons (no person/enrollment creation).
+                                person_id_csv = str(csv_row.get('Person ID', '') or '').strip()
+                                if not person_id_csv:
+                                    skipped_unknown_missing_person += 1
+                                    skipped_unknown_events += 1
+                                    continue
+
+                                raw_date = csv_row.get('Event Date', '')
+                                new_date_raw = '' if pd.isna(raw_date) else str(raw_date).strip()
+                                new_date, parse_issue = _normalize_event_date(new_date_raw)
+                                if parse_issue or not new_date:
+                                    skipped_unknown_invalid_date += 1
+                                    skipped_unknown_events += 1
+                                    continue
+
+                                new_stage_values = []
+                                for col_name in imported_stage_cols:
+                                    raw_val = csv_row.get(col_name, '')
+                                    val = '' if pd.isna(raw_val) else str(raw_val).strip()
+                                    if not val:
+                                        continue
+                                    spec = column_to_spec.get(col_name)
+                                    if not spec:
+                                        continue
+                                    new_stage_values.append({
+                                        'col': col_name,
+                                        'deUID': spec['deUID'],
+                                        'deName': spec['deName'],
+                                        'deType': spec.get('deType', ''),
+                                        'value': val,
+                                    })
+
+                                if not new_stage_values:
+                                    skipped_unknown_missing_values += 1
+                                    skipped_unknown_events += 1
+                                    continue
+
+                                import_row_id = f"__IMPORTED__{len(imported_create_changes) + 1}"
+                                imported_create_changes.append({
+                                    'templateRowId': import_row_id,
+                                    'eventId': '',
+                                    'personId': person_id_csv,
+                                    'personName': str(csv_row.get(name_col, '') or '').strip() if name_col else '',
+                                    'eventDate': new_date,
+                                    'templateField': 'Person ID',
+                                    'deUID': '__CREATE_PERSON_ID__',
+                                    'deName': 'Person ID',
+                                    'deType': 'TEXT',
+                                    'oldValue': '',
+                                    'newValue': person_id_csv,
+                                    'changeType': 'CREATE_PERSON_ID',
+                                    'operation': 'CREATE',
+                                    'eventOnly': True,
+                                })
+                                imported_create_changes.append({
+                                    'templateRowId': import_row_id,
+                                    'eventId': '',
+                                    'personId': person_id_csv,
+                                    'personName': str(csv_row.get(name_col, '') or '').strip() if name_col else '',
+                                    'eventDate': new_date,
+                                    'templateField': 'Event Date',
+                                    'deUID': '__CREATE_EVENT_DATE__',
+                                    'deName': 'Event Date',
+                                    'deType': 'DATE',
+                                    'oldValue': '',
+                                    'newValue': new_date,
+                                    'changeType': 'CREATE_EVENT_DATE',
+                                    'operation': 'CREATE',
+                                    'eventOnly': True,
+                                })
+                                for sv in new_stage_values:
+                                    imported_create_changes.append({
+                                        'templateRowId': import_row_id,
+                                        'eventId': '',
+                                        'personId': person_id_csv,
+                                        'personName': str(csv_row.get(name_col, '') or '').strip() if name_col else '',
+                                        'eventDate': new_date,
+                                        'templateField': sv['col'],
+                                        'deUID': sv['deUID'],
+                                        'deName': sv['deName'],
+                                        'deType': sv['deType'],
+                                        'oldValue': '',
+                                        'newValue': sv['value'],
+                                        'changeType': 'CREATE_DATA_VALUE',
+                                        'operation': 'CREATE',
+                                        'eventOnly': True,
+                                    })
                                 continue
 
                             original_for_event = original_values.get(event_id, {})
@@ -2225,17 +2329,35 @@ def display_events_interface():
                                     new_overrides[row_id]['Enrollment Date'] = new_enrollment_date
 
                         st.session_state.event_template_overrides = new_overrides
+                        st.session_state.event_import_create_changes = imported_create_changes
                         st.session_state.event_show_review = False
                         st.session_state.events_editor_rev += 1
                         if new_overrides:
                             changed_cells = sum(len(v) for v in new_overrides.values())
+                            imported_event_create_rows = len({c.get('templateRowId', '') for c in imported_create_changes})
                             st.success(
                                 f"Loaded template values for {len(new_overrides)} event(s), {changed_cells} changed field(s)."
                                 + (f" Skipped {skipped_unknown_events} unknown event row(s)." if skipped_unknown_events else "")
                             )
+                            if imported_event_create_rows:
+                                st.info(
+                                    f"Prepared {imported_event_create_rows} unknown event row(s) as event-only creates for existing Person IDs."
+                                )
                             if skipped_create_rows_multi:
                                 st.warning(
                                     f"Skipped {skipped_create_rows_multi} __NEW__ row(s) because multi-school mode supports updates only."
+                                )
+                            if skipped_unknown_missing_person:
+                                st.warning(
+                                    f"Skipped {skipped_unknown_missing_person} unknown row(s) without Person ID."
+                                )
+                            if skipped_unknown_invalid_date:
+                                st.warning(
+                                    f"Skipped {skipped_unknown_invalid_date} unknown row(s) with invalid Event Date."
+                                )
+                            if skipped_unknown_missing_values:
+                                st.warning(
+                                    f"Skipped {skipped_unknown_missing_values} unknown row(s) with no stage values."
                                 )
                             if invalid_event_date_rows:
                                 st.warning(
@@ -2249,7 +2371,13 @@ def display_events_interface():
                                 )
                             st.rerun()
                         else:
-                            if non_stage_changes > 0:
+                            imported_event_create_rows = len({c.get('templateRowId', '') for c in imported_create_changes})
+                            if imported_event_create_rows:
+                                st.info(
+                                    f"Prepared {imported_event_create_rows} unknown event row(s) as event-only creates for existing Person IDs."
+                                )
+                                st.rerun()
+                            elif non_stage_changes > 0:
                                 st.warning(
                                     "No postable stage-field changes detected. It looks like only identification/attribute columns "
                                     "were edited, and those are not pushed in Event update payloads."
@@ -2748,6 +2876,11 @@ def display_events_interface():
                         'changeType': 'DATA_VALUE',
                         'operation': 'UPDATE',
                     })
+
+    # Include event-only create changes prepared from imported unknown Event IDs.
+    imported_create_changes = st.session_state.get('event_import_create_changes', []) or []
+    if imported_create_changes:
+        changes.extend(imported_create_changes)
 
     # Deduplicate: same (eventId, deUID) from both paths → keep last entry
     seen_keys = {}
