@@ -815,6 +815,14 @@ def main_app():
 
                                 chunks = list(_iter_chunks(ou_entries, _AGGREGATE_PUSH_CHUNK_SIZE))
                                 for school_chunk_index, ou_chunk in enumerate(chunks, start=1):
+                                    in_flight_chunk = done_chunks + 1
+                                    progress.progress(
+                                        done_chunks / max(total_chunks, 1),
+                                        text=(
+                                            f"Sending chunk {in_flight_chunk} of {total_chunks} "
+                                            f"(school {index}/{total_ous}, {len(ou_chunk)} values)..."
+                                        ),
+                                    )
                                     status_placeholder.info(
                                         f"Posting school {index} of {total_ous} "
                                         f"(chunk {school_chunk_index} of {len(chunks)}): "
@@ -871,6 +879,10 @@ def main_app():
                                     '; '.join(ou_message_parts[:5]),
                                     ''
                                 )
+
+                        status_placeholder.success(
+                            f"Posting completed. Processed {total_chunks} chunk(s) across {total_ous} school(s)."
+                        )
 
                         message = '; '.join(message_parts[:5])
                         if status in ('SUCCESS', 'OK'):
@@ -3215,7 +3227,7 @@ _NUMERIC_TYPES = {'INTEGER', 'INTEGER_POSITIVE', 'INTEGER_NEGATIVE',
                   'INTEGER_ZERO_OR_POSITIVE', 'NUMBER', 'UNIT_INTERVAL', 'PERCENTAGE'}
 _BOOL_TYPES = {'BOOLEAN', 'TRUE_ONLY'}
 _CSV_SAVE_CHUNK_SIZE = 250
-_AGGREGATE_PUSH_CHUNK_SIZE = 100
+_AGGREGATE_PUSH_CHUNK_SIZE = 50
 
 
 def _iter_chunks(values, chunk_size):
@@ -3421,6 +3433,14 @@ def push_to_dhis2():
 
                 chunks = list(_iter_chunks(ou_entries, _AGGREGATE_PUSH_CHUNK_SIZE))
                 for school_chunk_index, ou_chunk in enumerate(chunks, start=1):
+                    in_flight_chunk = done_chunks + 1
+                    progress.progress(
+                        done_chunks / max(total_chunks, 1),
+                        text=(
+                            f"Sending chunk {in_flight_chunk} of {total_chunks} "
+                            f"(school {index}/{total_ous}, {len(ou_chunk)} values)..."
+                        )
+                    )
                     status_placeholder.info(
                         f"Pushing school {index} of {total_ous} "
                         f"(chunk {school_chunk_index} of {len(chunks)}): "
@@ -3481,6 +3501,10 @@ def push_to_dhis2():
                     '; '.join(ou_message_parts[:5]),
                     conflicts
                 )
+
+        status_placeholder.success(
+            f"Push completed. Processed {total_chunks} chunk(s) across {total_ous} school(s)."
+        )
 
         message = '; '.join(message_parts[:5])
         conflicts = '; '.join(all_conflicts[:5])
