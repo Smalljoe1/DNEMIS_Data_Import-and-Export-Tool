@@ -22,7 +22,7 @@ def init_session_state():
         'authenticated': False,
         'username': '',
         'password': '',
-        'instance_url': 'https://asc.education.gov.ng/dhis',
+        'instance_url': '',
         'org_unit_uid': '',
         'root_org_unit_uid': '',
         'root_org_unit_level': 0,
@@ -89,7 +89,7 @@ def login_page():
     with st.form("login_form"):
         instance_url = st.text_input(
             "DNEMIS Instance URL",
-            value=st.session_state.get('instance_url', 'https://asc.education.gov.ng/dhis'),
+            value=st.session_state.get('instance_url', ''),
             help="Enter the base URL of your DNEMIS/DHIS2 instance (e.g., https://your-instance.com/dhis)"
         )
         username = st.text_input("Username")
