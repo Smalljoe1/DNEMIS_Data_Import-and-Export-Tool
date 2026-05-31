@@ -62,6 +62,7 @@ def init_session_state():
         'event_has_unsaved_edits': False,
         'events_editor_rev': 0,
         'aggregate_post_feedback': None,
+        'aggregate_import_feedback': None,
         'dhis2_cache_buster': 0
     }
     for key, value in defaults.items():
@@ -628,6 +629,26 @@ def main_app():
 
         st.markdown("---")
         st.subheader("Data Template Export/Import")
+
+        import_feedback = st.session_state.get('aggregate_import_feedback')
+        if isinstance(import_feedback, dict):
+            fb_level = str(import_feedback.get('level', 'info') or 'info').lower()
+            fb_title = str(import_feedback.get('title', '') or '').strip()
+            fb_detail = str(import_feedback.get('detail', '') or '').strip()
+            if fb_level == 'success':
+                st.success(fb_title or "Last import completed successfully.")
+            elif fb_level == 'warning':
+                st.warning(fb_title or "Last import completed with warnings.")
+            elif fb_level == 'error':
+                st.error(fb_title or "Last import failed.")
+            else:
+                st.info(fb_title or "Last import result available.")
+            if fb_detail:
+                st.caption(fb_detail)
+            if st.button("Dismiss last import message", key="dismiss_aggregate_import_feedback"):
+                st.session_state['aggregate_import_feedback'] = None
+                st.rerun()
+
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
             if st.button("Download Data Template (CSV)"):
@@ -752,9 +773,19 @@ def main_app():
                                         text=f"Saved import chunk {chunk_index} of {total_chunks}"
                                     )
                             save_progress.empty()
+                            st.session_state['aggregate_import_feedback'] = {
+                                'level': 'success',
+                                'title': f"Saved {count} value(s).",
+                                'detail': f"{len(errors)} row(s) skipped during import.",
+                            }
                             st.success(f"Saved {count} value(s). {len(errors)} row(s) skipped.")
                             load_comparison_data()
                         elif not errors:
+                            st.session_state['aggregate_import_feedback'] = {
+                                'level': 'info',
+                                'title': "No values to import.",
+                                'detail': "All Local Value cells were blank.",
+                            }
                             st.info("No values to import (all cells are blank).")
                 except Exception as e:
                     st.error(f"Failed to process uploaded CSV: {e}")
