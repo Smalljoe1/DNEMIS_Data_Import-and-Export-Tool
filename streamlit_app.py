@@ -2,6 +2,7 @@
 import streamlit as st
 import json
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 
 st.set_page_config(layout="wide")
 import re
@@ -16,6 +17,33 @@ import export_maps
 # Initialize database
 db.init_db()
 
+def _push_aggregate_org_unit(ou_uid, ou_entries, selected_period, dataset_uid, username, password):
+    """Save and push one org unit's aggregate values, returning a result summary."""
+    db.save_local_values(
+        ou_uid,
+        str(selected_period),
+        ou_entries,
+    )
+    result = dhis2.push_data_values(
+        ou_uid,
+        str(selected_period),
+        dataset_uid,
+        ou_entries,
+        username,
+        password,
+    )
+    response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
+    imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
+    return {
+        'orgUnitUID': ou_uid,
+        'imported': int(imp.get('importCount', {}).get('imported', 0) or 0),
+        'updated': int(imp.get('importCount', {}).get('updated', 0) or 0),
+        'ignored': int(imp.get('importCount', {}).get('ignored', 0) or 0),
+        'status': str(imp.get('status', 'UNKNOWN') or 'UNKNOWN'),
+        'message': imp.get('description', '') or imp.get('message', '') or '',
+        'conflicts': str(imp.get('conflicts', '')) if imp.get('conflicts') else '',
+        'entries': len(ou_entries),
+    }
 # Session state initialization
 def init_session_state():
     defaults = {
@@ -1335,53 +1363,54 @@ def display_sync_logs():
 
         # ── Audit dashboard ──────────────────────────────────────────────
         total_syncs = len(df_all)
-        success_mask = df_all['dhis2Status'].isin(['SUCCESS', 'OK'])
-        error_mask = df_all['dhis2Status'] == 'ERROR'
-        success_count = success_mask.sum()
+                        imported = updated = ignored = 0
+                        status = 'SUCCESS'
+                        message_parts = []
         error_count = error_mask.sum()
         failure_rate = round(100 * error_count / total_syncs, 1) if total_syncs else 0
+                            max_workers = min(4, total_ous)
+                            futures = {}
+                            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                                for ou_uid, ou_entries in by_ou.items():
+                                    futures[executor.submit(
+                                        _push_aggregate_org_unit,
+                                        ou_uid,
+                                        ou_entries,
+                                        st.session_state.selected_period,
+                                        st.session_state.selected_dataset,
+                                        st.session_state.username,
+                                        st.session_state.password,
+                                    )] = ou_uid
 
-        last_ok = df_all.loc[success_mask, 'syncedAt'].max() if success_count else None
-        last_err = df_all.loc[error_mask, 'syncedAt'].max() if error_count else None
-
-        def _fmt_ts(ts):
-            if ts is None:
-                return '—'
-            try:
-                return pd.to_datetime(ts).strftime('%Y-%m-%d %H:%M')
-            except Exception:
-                return str(ts)
-
-        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-        mc1.metric("Total Syncs", total_syncs)
-        mc2.metric("Successful", success_count)
-        mc3.metric("Errors", error_count, delta=f"{failure_rate}% fail rate" if error_count else None,
-                   delta_color="inverse")
-        mc4.metric("Last Success", _fmt_ts(last_ok))
-        mc5.metric("Last Error", _fmt_ts(last_err))
-
-        # Top error messages
-        if error_count:
-            top_errors = (
-                df_all.loc[error_mask, 'dhis2Message']
-                .value_counts()
-                .head(3)
-            )
-            with st.expander("Top error messages"):
-                for msg, cnt in top_errors.items():
-                    st.markdown(f"- **{cnt}×** `{msg or '(no message)'}`")
-
-        st.markdown("---")
-
-        # ── Log table ────────────────────────────────────────────────────
-        df_all['Time'] = pd.to_datetime(df_all['syncedAt']).dt.strftime('%Y-%m-%d %H:%M')
-        display_cols = ['Time', 'dhis2Status', 'batchSize', 'imported', 'updated', 'ignored', 'dhis2Message']
-        df_display = df_all[display_cols].rename(columns={
-            'dhis2Status': 'Status',
-            'batchSize': 'Batch',
-            'imported': 'Imported',
-            'updated': 'Updated',
-            'ignored': 'Ignored',
+                                for index, future in enumerate(as_completed(futures), start=1):
+                                    ou_uid = futures[future]
+                                    result = future.result()
+                                    imported += result['imported']
+                                    updated += result['updated']
+                                    ignored += result['ignored']
+                                    ou_status = result['status']
+                                    ou_message = result['message']
+                                    conflicts = result['conflicts']
+                                    db.log_sync(
+                                        ou_uid,
+                                        st.session_state.selected_dataset,
+                                        str(st.session_state.selected_period),
+                                        result['entries'],
+                                        result['imported'],
+                                        result['updated'],
+                                        result['ignored'],
+                                        ou_status,
+                                        ou_message,
+                                        conflicts
+                                    )
+                                    if ou_status not in ('SUCCESS', 'OK'):
+                                        status = 'WARNING'
+                                    if ou_message:
+                                        message_parts.append(ou_message)
+                                    status_placeholder.info(
+                                        f"Posted school {index} of {total_ous}: {st.session_state.selected_org_unit_labels.get(ou_uid, ou_uid)}"
+                                    )
+                                    progress.progress(index / total_ous, text=f"Posted school {index} of {total_ous}")
             'dhis2Message': 'Message',
         })
         st.dataframe(df_display, use_container_width=True, hide_index=True)
@@ -2320,60 +2349,61 @@ def display_events_interface():
                 current_upload_sig = f"{uploaded_events_file.name}:{uploaded_events_file.size}"
                 if current_upload_sig == st.session_state.get('event_last_uploaded_template_sig', ''):
                     st.caption("Uploaded template already applied.")
-                    imported_df = None
-                else:
-                    imported_df = pd.read_csv(uploaded_events_file, dtype=str)
-                    st.session_state['event_last_uploaded_template_sig'] = current_upload_sig
+                    imported = updated = ignored = 0
+                    status = 'SUCCESS'
+                    message_parts = []
+                    all_conflicts = []
 
                 if imported_df is None:
-                    pass
-                elif 'Template Row ID' not in imported_df.columns:
-                    st.error("CSV missing required column: Template Row ID")
-                else:
-                    valid_event_ids = {str(r.get('Event ID', '')) for r in st.session_state.event_rows if str(r.get('Event ID', '')).strip()}
-                    valid_row_ids = {str(r.get('Template Row ID', '')) for _, r in df.iterrows()}
-                    imported_editable_cols = [c for c in imported_df.columns if c in template_editable_columns]
-                    imported_stage_cols = [c for c in imported_editable_cols if c in stage_columns]
-                    has_event_date_col = 'Event Date' in imported_editable_cols
-                    has_enrollment_date_col = 'Enrollment Date' in imported_editable_cols
-                    if not imported_editable_cols:
-                        st.error("CSV contains no editable stage/date columns for this selected program stage.")
-                    else:
-                        new_overrides = {}
-                        imported_create_changes = []
-                        skipped_unknown_events = 0
-                        skipped_create_rows_multi = 0
-                        skipped_unknown_missing_person = 0
-                        skipped_unknown_missing_values = 0
-                        skipped_unknown_invalid_date = 0
-                        non_stage_changes = 0
-                        invalid_event_date_rows = 0
-                        invalid_enrollment_date_rows = 0
-                        original_values = st.session_state.event_original_values
-                        current_row_map = {
-                            str(row.get('Template Row ID', '') or ''): row
-                            for _, row in df.iterrows()
-                        }
-                        non_stage_cols = [
-                            c for c in imported_df.columns
-                            if c not in imported_editable_cols and c != 'Event ID'
-                        ]
-                        for _, csv_row in imported_df.iterrows():
-                            row_id = str(csv_row.get('Template Row ID', '') or '').strip()
-                            event_id = str(csv_row.get('Event ID', '') or '').strip()
-                            if not row_id:
-                                continue
-                            if row_id not in valid_row_ids:
-                                skipped_unknown_events += 1
-                                continue
+                        max_workers = min(4, total_ous)
+                        futures = {}
+                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            for ou_uid, ou_entries_full in by_ou.items():
+                                ou_entries = [
+                                    {'deUID': e['deUID'], 'cocUID': e['cocUID'], 'value': e['value']}
+                                    for e in ou_entries_full
+                                ]
+                                futures[executor.submit(
+                                    _push_aggregate_org_unit,
+                                    ou_uid,
+                                    ou_entries,
+                                    st.session_state.selected_period,
+                                    st.session_state.selected_dataset,
+                                    st.session_state.username,
+                                    st.session_state.password,
+                                )] = (ou_uid, ou_entries)
 
-                            is_create_row = str(row_id).startswith('__NEW__')
-                            if is_create_row and events_multi_scope:
-                                skipped_create_rows_multi += 1
-                                continue
-                            current_row = current_row_map.get(row_id)
-                            if current_row is not None:
-                                for col_name in non_stage_cols:
+                            for index, future in enumerate(as_completed(futures), start=1):
+                                ou_uid, ou_entries = futures[future]
+                                result = future.result()
+                                imported += result['imported']
+                                updated += result['updated']
+                                ignored += result['ignored']
+                                ou_status = result['status']
+                                ou_message = result['message']
+                                conflicts = result['conflicts']
+                                if conflicts:
+                                    all_conflicts.append(conflicts)
+                                if ou_status not in ('SUCCESS', 'OK'):
+                                    status = 'WARNING'
+                                if ou_message:
+                                    message_parts.append(ou_message)
+                                db.log_sync(
+                                    ou_uid,
+                                    st.session_state.selected_dataset,
+                                    str(st.session_state.selected_period),
+                                    result['entries'],
+                                    result['imported'],
+                                    result['updated'],
+                                    result['ignored'],
+                                    ou_status,
+                                    ou_message,
+                                    conflicts
+                                )
+                                status_placeholder.info(
+                                    f"Pushed school {index} of {total_ous}: {st.session_state.selected_org_unit_labels.get(ou_uid, ou_uid)}"
+                                )
+                                progress.progress(index / total_ous, text=f"Pushed school {index} of {total_ous}")
                                     if col_name not in current_row.index:
                                         continue
                                     raw_non_stage = csv_row.get(col_name, '')
