@@ -127,36 +127,40 @@ def login_page():
                 st.error(f"Login failed: {str(e)}")
 
 @st.cache_data(ttl=300)
-def load_datasets(username, password):
+def load_datasets(instance_url, username, password):
     try:
+        dhis2.set_base_url(instance_url)
         return dhis2.get_datasets(username, password)
     except Exception:
         return []
 
 
 @st.cache_data(ttl=300)
-def load_programs(username, password):
+def load_programs(instance_url, username, password):
     try:
+        dhis2.set_base_url(instance_url)
         return dhis2.get_programs(username, password)
     except Exception:
         return []
 
 
 @st.cache_data(ttl=300)
-def load_program_stages(program_uid, username, password):
+def load_program_stages(instance_url, program_uid, username, password):
     if not program_uid:
         return []
     try:
+        dhis2.set_base_url(instance_url)
         return dhis2.get_program_stages(program_uid, username, password)
     except Exception:
         return []
 
 
 @st.cache_data(ttl=300)
-def load_descendant_level5_org_units(root_org_uid, username, password):
+def load_descendant_level5_org_units(instance_url, root_org_uid, username, password):
     if not root_org_uid:
         return []
     try:
+        dhis2.set_base_url(instance_url)
         return dhis2.get_descendant_org_units(
             root_org_uid,
             username,
@@ -168,19 +172,21 @@ def load_descendant_level5_org_units(root_org_uid, username, password):
 
 
 @st.cache_data(ttl=300)
-def load_dataset_org_units(dataset_uid, username, password):
+def load_dataset_org_units(instance_url, dataset_uid, username, password):
     if not dataset_uid:
         return []
     try:
+        dhis2.set_base_url(instance_url)
         return dhis2.get_dataset_org_units(dataset_uid, username, password)
     except Exception:
         return []
 
 
 @st.cache_data(ttl=120)
-def load_data_values_cached(org_unit_uid, period, dataset_uid, username, password, id_scheme='uid', cache_buster=0):
+def load_data_values_cached(instance_url, org_unit_uid, period, dataset_uid, username, password, id_scheme='uid', cache_buster=0):
     """Cached wrapper around DHIS2 dataValueSets fetch for aggregate compare."""
     _ = cache_buster
+    dhis2.set_base_url(instance_url)
     return dhis2.get_data_values(
         org_unit_uid,
         period,
@@ -192,6 +198,9 @@ def load_data_values_cached(org_unit_uid, period, dataset_uid, username, passwor
 
 # Main application
 def main_app():
+    if st.session_state.get('instance_url'):
+        dhis2.set_base_url(st.session_state.instance_url)
+
     # Sidebar with user info and navigation
     with st.sidebar:
         st.header(f"Welcome, {st.session_state.user_name}")
@@ -222,7 +231,7 @@ def main_app():
         if st.session_state.data_mode == "Aggregate Forms":
             st.subheader("Select Dataset")
 
-            datasets = load_datasets(st.session_state.username, st.session_state.password)
+            datasets = load_datasets(st.session_state.instance_url, st.session_state.username, st.session_state.password)
             dataset_options = {ds['name']: ds['id'] for ds in datasets}
 
             # Mapping from school type to dataset name substring
@@ -272,6 +281,7 @@ def main_app():
                 if curr_dataset_uid and prev_dataset_uid and curr_dataset_uid != prev_dataset_uid:
                     try:
                         level5_ous = load_descendant_level5_org_units(
+                            st.session_state.instance_url,
                             st.session_state.get('root_org_unit_uid', ''),
                             st.session_state.username,
                             st.session_state.password,
@@ -282,6 +292,7 @@ def main_app():
                             if str(ou.get('id', '') or '')
                         }
                         dataset_ous = load_dataset_org_units(
+                            st.session_state.instance_url,
                             curr_dataset_uid,
                             st.session_state.username,
                             st.session_state.password,
@@ -307,6 +318,7 @@ def main_app():
             # Org unit scope selection (after dataset): Level 3 users can target Level 5 schools under their LGA.
             if int(st.session_state.get('root_org_unit_level', 0) or 0) < 5:
                 level5_ous = load_descendant_level5_org_units(
+                    st.session_state.instance_url,
                     st.session_state.get('root_org_unit_uid', ''),
                     st.session_state.username,
                     st.session_state.password,
@@ -318,6 +330,7 @@ def main_app():
                     dataset_filter_applied = False
                     if selected_dataset_uid:
                         dataset_org_units = load_dataset_org_units(
+                            st.session_state.instance_url,
                             selected_dataset_uid,
                             st.session_state.username,
                             st.session_state.password,
@@ -385,7 +398,7 @@ def main_app():
                     if st.button("Keep editing", key="nav_keep"):
                         st.session_state['dataset_select'] = next(
                             (n for n, i in {ds['name']: ds['id'] for ds in load_datasets(
-                                st.session_state.username, st.session_state.password)}.items()
+                                st.session_state.instance_url, st.session_state.username, st.session_state.password)}.items()
                              if i == st.session_state.get('_last_dataset')), None)
                         st.rerun()
                 with col_discard:
@@ -407,6 +420,7 @@ def main_app():
         else:
             if int(st.session_state.get('root_org_unit_level', 0) or 0) < 5:
                 level5_ous = load_descendant_level5_org_units(
+                    st.session_state.instance_url,
                     st.session_state.get('root_org_unit_uid', ''),
                     st.session_state.username,
                     st.session_state.password,
@@ -452,7 +466,7 @@ def main_app():
                     st.caption("Events fetch/export/import/push will use all selected schools.")
 
             st.subheader("Select Program Stage")
-            programs = load_programs(st.session_state.username, st.session_state.password)
+            programs = load_programs(st.session_state.instance_url, st.session_state.username, st.session_state.password)
             program_options = {p['name']: p['id'] for p in programs}
 
             if not program_options:
@@ -466,6 +480,7 @@ def main_app():
                 st.session_state.selected_program = program_options[selected_program_name]
 
                 stages = load_program_stages(
+                    st.session_state.instance_url,
                     st.session_state.selected_program,
                     st.session_state.username,
                     st.session_state.password
@@ -496,6 +511,7 @@ def main_app():
                                 st.session_state.get('program_select')
                             )
                             prev_stages = load_program_stages(
+                                st.session_state.instance_url,
                                 prev_program,
                                 st.session_state.username,
                                 st.session_state.password
@@ -928,6 +944,7 @@ def compare_data():
 
     def _fetch_org_context(org_uid):
         dhis2_values_uid = load_data_values_cached(
+            st.session_state.instance_url,
             org_uid,
             period,
             dataset_uid,
@@ -943,6 +960,7 @@ def compare_data():
         unmatched_fetched_uid_keys = fetched_uid_keys - expected_keys
         if unmatched_fetched_uid_keys:
             dhis2_values_name = load_data_values_cached(
+                st.session_state.instance_url,
                 org_uid,
                 period,
                 dataset_uid,
