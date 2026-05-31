@@ -731,13 +731,27 @@ def main_app():
                                     'cocUID': e['cocUID'],
                                     'value': e['value'],
                                 })
+
+                            total_chunks = sum(
+                                max(1, (len(ou_entries) + _CSV_SAVE_CHUNK_SIZE - 1) // _CSV_SAVE_CHUNK_SIZE)
+                                for ou_entries in by_ou.values()
+                            )
+                            chunk_index = 0
+                            save_progress = st.progress(0, text="Preparing import save chunks...")
                             count = 0
                             for ou_uid, ou_entries in by_ou.items():
-                                count += db.save_local_values(
-                                    ou_uid,
-                                    str(st.session_state.selected_period),
-                                    ou_entries
-                                )
+                                for chunk in _iter_chunks(ou_entries, _CSV_SAVE_CHUNK_SIZE):
+                                    count += db.save_local_values(
+                                        ou_uid,
+                                        str(st.session_state.selected_period),
+                                        chunk
+                                    )
+                                    chunk_index += 1
+                                    save_progress.progress(
+                                        chunk_index / max(total_chunks, 1),
+                                        text=f"Saved import chunk {chunk_index} of {total_chunks}"
+                                    )
+                            save_progress.empty()
                             st.success(f"Saved {count} value(s). {len(errors)} row(s) skipped.")
                             load_comparison_data()
                         elif not errors:
@@ -782,50 +796,81 @@ def main_app():
                         status = 'SUCCESS'
                         message_parts = []
                         total_ous = max(len(by_ou), 1)
+                        total_chunks = sum(
+                            max(1, (len(ou_entries) + _AGGREGATE_PUSH_CHUNK_SIZE - 1) // _AGGREGATE_PUSH_CHUNK_SIZE)
+                            for ou_entries in by_ou.values()
+                        )
+                        done_chunks = 0
 
                         with st.spinner("Posting local values to DHIS2..."):
                             for index, (ou_uid, ou_entries) in enumerate(by_ou.items(), start=1):
-                                status_placeholder.info(
-                                    f"Posting school {index} of {total_ous}: {st.session_state.selected_org_unit_labels.get(ou_uid, ou_uid)}"
-                                )
                                 db.save_local_values(
                                     ou_uid,
                                     str(st.session_state.selected_period),
                                     ou_entries
                                 )
-                                result = dhis2.push_data_values(
-                                    ou_uid,
-                                    str(st.session_state.selected_period),
-                                    st.session_state.selected_dataset,
-                                    ou_entries,
-                                    st.session_state.username,
-                                    st.session_state.password
-                                )
-                                response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
-                                imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
-                                imported += int(imp.get('importCount', {}).get('imported', 0) or 0)
-                                updated += int(imp.get('importCount', {}).get('updated', 0) or 0)
-                                ignored += int(imp.get('importCount', {}).get('ignored', 0) or 0)
-                                ou_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
-                                ou_message = imp.get('description', '') or imp.get('message', '') or ''
-                                conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
+                                ou_imported = ou_updated = ou_ignored = 0
+                                ou_status = 'SUCCESS'
+                                ou_message_parts = []
+
+                                chunks = list(_iter_chunks(ou_entries, _AGGREGATE_PUSH_CHUNK_SIZE))
+                                for school_chunk_index, ou_chunk in enumerate(chunks, start=1):
+                                    status_placeholder.info(
+                                        f"Posting school {index} of {total_ous} "
+                                        f"(chunk {school_chunk_index} of {len(chunks)}): "
+                                        f"{st.session_state.selected_org_unit_labels.get(ou_uid, ou_uid)}"
+                                    )
+                                    result = dhis2.push_data_values(
+                                        ou_uid,
+                                        str(st.session_state.selected_period),
+                                        st.session_state.selected_dataset,
+                                        ou_chunk,
+                                        st.session_state.username,
+                                        st.session_state.password
+                                    )
+                                    response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
+                                    imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
+                                    chunk_imported = int(imp.get('importCount', {}).get('imported', 0) or 0)
+                                    chunk_updated = int(imp.get('importCount', {}).get('updated', 0) or 0)
+                                    chunk_ignored = int(imp.get('importCount', {}).get('ignored', 0) or 0)
+                                    chunk_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
+                                    chunk_message = imp.get('description', '') or imp.get('message', '') or ''
+
+                                    imported += chunk_imported
+                                    updated += chunk_updated
+                                    ignored += chunk_ignored
+                                    ou_imported += chunk_imported
+                                    ou_updated += chunk_updated
+                                    ou_ignored += chunk_ignored
+
+                                    if chunk_status not in ('SUCCESS', 'OK'):
+                                        status = 'WARNING'
+                                        ou_status = 'WARNING'
+                                    if chunk_message:
+                                        message_parts.append(chunk_message)
+                                        ou_message_parts.append(chunk_message)
+
+                                    done_chunks += 1
+                                    progress.progress(
+                                        done_chunks / max(total_chunks, 1),
+                                        text=(
+                                            f"Posted chunk {done_chunks} of {total_chunks} "
+                                            f"(school {index}/{total_ous})"
+                                        ),
+                                    )
+
                                 db.log_sync(
                                     ou_uid,
                                     st.session_state.selected_dataset,
                                     str(st.session_state.selected_period),
                                     len(ou_entries),
-                                    int(imp.get('importCount', {}).get('imported', 0) or 0),
-                                    int(imp.get('importCount', {}).get('updated', 0) or 0),
-                                    int(imp.get('importCount', {}).get('ignored', 0) or 0),
+                                    ou_imported,
+                                    ou_updated,
+                                    ou_ignored,
                                     ou_status,
-                                    ou_message,
-                                    conflicts
+                                    '; '.join(ou_message_parts[:5]),
+                                    ''
                                 )
-                                if ou_status not in ('SUCCESS', 'OK'):
-                                    status = 'WARNING'
-                                if ou_message:
-                                    message_parts.append(ou_message)
-                                progress.progress(index / total_ous, text=f"Posted school {index} of {total_ous}")
 
                         message = '; '.join(message_parts[:5])
                         if status in ('SUCCESS', 'OK'):
@@ -3169,6 +3214,15 @@ _POSITIVE_INT_TYPES = {'INTEGER_POSITIVE', 'INTEGER_ZERO_OR_POSITIVE'}
 _NUMERIC_TYPES = {'INTEGER', 'INTEGER_POSITIVE', 'INTEGER_NEGATIVE',
                   'INTEGER_ZERO_OR_POSITIVE', 'NUMBER', 'UNIT_INTERVAL', 'PERCENTAGE'}
 _BOOL_TYPES = {'BOOLEAN', 'TRUE_ONLY'}
+_CSV_SAVE_CHUNK_SIZE = 250
+_AGGREGATE_PUSH_CHUNK_SIZE = 100
+
+
+def _iter_chunks(values, chunk_size):
+    """Yield chunk slices from a list-like sequence."""
+    size = max(1, int(chunk_size or 1))
+    for idx in range(0, len(values), size):
+        yield values[idx:idx + size]
 
 
 def _normalize_aggregate_date(value):
@@ -3343,12 +3397,14 @@ def push_to_dhis2():
         message_parts = []
         all_conflicts = []
         total_ous = max(len(by_ou), 1)
+        total_chunks = sum(
+            max(1, (len(ou_entries) + _AGGREGATE_PUSH_CHUNK_SIZE - 1) // _AGGREGATE_PUSH_CHUNK_SIZE)
+            for ou_entries in by_ou.values()
+        )
+        done_chunks = 0
 
         with st.spinner("Pushing reviewed changes to DHIS2..."):
             for index, (ou_uid, ou_entries_full) in enumerate(by_ou.items(), start=1):
-                status_placeholder.info(
-                    f"Pushing school {index} of {total_ous}: {st.session_state.selected_org_unit_labels.get(ou_uid, ou_uid)}"
-                )
                 ou_entries = [
                     {'deUID': e['deUID'], 'cocUID': e['cocUID'], 'value': e['value']}
                     for e in ou_entries_full
@@ -3358,41 +3414,73 @@ def push_to_dhis2():
                     str(st.session_state.selected_period),
                     ou_entries
                 )
-                result = dhis2.push_data_values(
-                    ou_uid,
-                    str(st.session_state.selected_period),
-                    st.session_state.selected_dataset,
-                    ou_entries,
-                    st.session_state.username,
-                    st.session_state.password
-                )
-                response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
-                imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
-                imported += int(imp.get('importCount', {}).get('imported', 0) or 0)
-                updated += int(imp.get('importCount', {}).get('updated', 0) or 0)
-                ignored += int(imp.get('importCount', {}).get('ignored', 0) or 0)
-                ou_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
-                ou_message = imp.get('description', '') or imp.get('message', '') or ''
-                conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
-                if conflicts:
-                    all_conflicts.append(conflicts)
-                if ou_status not in ('SUCCESS', 'OK'):
-                    status = 'WARNING'
-                if ou_message:
-                    message_parts.append(ou_message)
+                ou_imported = ou_updated = ou_ignored = 0
+                ou_status = 'SUCCESS'
+                ou_message_parts = []
+                conflicts = ''
+
+                chunks = list(_iter_chunks(ou_entries, _AGGREGATE_PUSH_CHUNK_SIZE))
+                for school_chunk_index, ou_chunk in enumerate(chunks, start=1):
+                    status_placeholder.info(
+                        f"Pushing school {index} of {total_ous} "
+                        f"(chunk {school_chunk_index} of {len(chunks)}): "
+                        f"{st.session_state.selected_org_unit_labels.get(ou_uid, ou_uid)}"
+                    )
+                    result = dhis2.push_data_values(
+                        ou_uid,
+                        str(st.session_state.selected_period),
+                        st.session_state.selected_dataset,
+                        ou_chunk,
+                        st.session_state.username,
+                        st.session_state.password
+                    )
+                    response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
+                    imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
+                    chunk_imported = int(imp.get('importCount', {}).get('imported', 0) or 0)
+                    chunk_updated = int(imp.get('importCount', {}).get('updated', 0) or 0)
+                    chunk_ignored = int(imp.get('importCount', {}).get('ignored', 0) or 0)
+                    chunk_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
+                    chunk_message = imp.get('description', '') or imp.get('message', '') or ''
+                    chunk_conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
+
+                    imported += chunk_imported
+                    updated += chunk_updated
+                    ignored += chunk_ignored
+                    ou_imported += chunk_imported
+                    ou_updated += chunk_updated
+                    ou_ignored += chunk_ignored
+
+                    if chunk_conflicts:
+                        conflicts = chunk_conflicts
+                        all_conflicts.append(chunk_conflicts)
+                    if chunk_status not in ('SUCCESS', 'OK'):
+                        status = 'WARNING'
+                        ou_status = 'WARNING'
+                    if chunk_message:
+                        message_parts.append(chunk_message)
+                        ou_message_parts.append(chunk_message)
+
+                    done_chunks += 1
+                    progress.progress(
+                        done_chunks / max(total_chunks, 1),
+                        text=(
+                            f"Pushed chunk {done_chunks} of {total_chunks} "
+                            f"(school {index}/{total_ous})"
+                        )
+                    )
+
                 db.log_sync(
                     ou_uid,
                     st.session_state.selected_dataset,
                     str(st.session_state.selected_period),
                     len(ou_entries),
-                    int(imp.get('importCount', {}).get('imported', 0) or 0),
-                    int(imp.get('importCount', {}).get('updated', 0) or 0),
-                    int(imp.get('importCount', {}).get('ignored', 0) or 0),
+                    ou_imported,
+                    ou_updated,
+                    ou_ignored,
                     ou_status,
-                    ou_message,
+                    '; '.join(ou_message_parts[:5]),
                     conflicts
                 )
-                progress.progress(index / total_ous, text=f"Pushed school {index} of {total_ous}")
 
         message = '; '.join(message_parts[:5])
         conflicts = '; '.join(all_conflicts[:5])
