@@ -775,48 +775,57 @@ def main_app():
                                 'value': e['value'],
                             })
 
+                        progress = st.progress(0, text="Preparing to post local values to DHIS2...")
+                        status_placeholder = st.empty()
+
                         imported = updated = ignored = 0
                         status = 'SUCCESS'
                         message_parts = []
+                        total_ous = max(len(by_ou), 1)
 
-                        for ou_uid, ou_entries in by_ou.items():
-                            db.save_local_values(
-                                ou_uid,
-                                str(st.session_state.selected_period),
-                                ou_entries
-                            )
-                            result = dhis2.push_data_values(
-                                ou_uid,
-                                str(st.session_state.selected_period),
-                                st.session_state.selected_dataset,
-                                ou_entries,
-                                st.session_state.username,
-                                st.session_state.password
-                            )
-                            response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
-                            imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
-                            imported += int(imp.get('importCount', {}).get('imported', 0) or 0)
-                            updated += int(imp.get('importCount', {}).get('updated', 0) or 0)
-                            ignored += int(imp.get('importCount', {}).get('ignored', 0) or 0)
-                            ou_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
-                            ou_message = imp.get('description', '') or imp.get('message', '') or ''
-                            conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
-                            db.log_sync(
-                                ou_uid,
-                                st.session_state.selected_dataset,
-                                str(st.session_state.selected_period),
-                                len(ou_entries),
-                                int(imp.get('importCount', {}).get('imported', 0) or 0),
-                                int(imp.get('importCount', {}).get('updated', 0) or 0),
-                                int(imp.get('importCount', {}).get('ignored', 0) or 0),
-                                ou_status,
-                                ou_message,
-                                conflicts
-                            )
-                            if ou_status not in ('SUCCESS', 'OK'):
-                                status = 'WARNING'
-                            if ou_message:
-                                message_parts.append(ou_message)
+                        with st.spinner("Posting local values to DHIS2..."):
+                            for index, (ou_uid, ou_entries) in enumerate(by_ou.items(), start=1):
+                                status_placeholder.info(
+                                    f"Posting school {index} of {total_ous}: {st.session_state.selected_org_unit_labels.get(ou_uid, ou_uid)}"
+                                )
+                                db.save_local_values(
+                                    ou_uid,
+                                    str(st.session_state.selected_period),
+                                    ou_entries
+                                )
+                                result = dhis2.push_data_values(
+                                    ou_uid,
+                                    str(st.session_state.selected_period),
+                                    st.session_state.selected_dataset,
+                                    ou_entries,
+                                    st.session_state.username,
+                                    st.session_state.password
+                                )
+                                response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
+                                imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
+                                imported += int(imp.get('importCount', {}).get('imported', 0) or 0)
+                                updated += int(imp.get('importCount', {}).get('updated', 0) or 0)
+                                ignored += int(imp.get('importCount', {}).get('ignored', 0) or 0)
+                                ou_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
+                                ou_message = imp.get('description', '') or imp.get('message', '') or ''
+                                conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
+                                db.log_sync(
+                                    ou_uid,
+                                    st.session_state.selected_dataset,
+                                    str(st.session_state.selected_period),
+                                    len(ou_entries),
+                                    int(imp.get('importCount', {}).get('imported', 0) or 0),
+                                    int(imp.get('importCount', {}).get('updated', 0) or 0),
+                                    int(imp.get('importCount', {}).get('ignored', 0) or 0),
+                                    ou_status,
+                                    ou_message,
+                                    conflicts
+                                )
+                                if ou_status not in ('SUCCESS', 'OK'):
+                                    status = 'WARNING'
+                                if ou_message:
+                                    message_parts.append(ou_message)
+                                progress.progress(index / total_ous, text=f"Posted school {index} of {total_ous}")
 
                         message = '; '.join(message_parts[:5])
                         if status in ('SUCCESS', 'OK'):
@@ -3321,6 +3330,9 @@ def push_to_dhis2():
             ou_uid = str(e.get('orgUnitUID', '') or st.session_state.org_unit_uid)
             by_ou.setdefault(ou_uid, []).append(e)
 
+        progress = st.progress(0, text="Preparing to push reviewed changes to DHIS2...")
+        status_placeholder = st.empty()
+
         sent_entry_map = {
             str(e.get('row_key', '') or f"{e.get('orgUnitUID', st.session_state.org_unit_uid)}|{e['deUID']}|{e['cocUID']}"): e
             for e in entries
@@ -3330,51 +3342,57 @@ def push_to_dhis2():
         status = 'SUCCESS'
         message_parts = []
         all_conflicts = []
+        total_ous = max(len(by_ou), 1)
 
-        for ou_uid, ou_entries_full in by_ou.items():
-            ou_entries = [
-                {'deUID': e['deUID'], 'cocUID': e['cocUID'], 'value': e['value']}
-                for e in ou_entries_full
-            ]
-            db.save_local_values(
-                ou_uid,
-                str(st.session_state.selected_period),
-                ou_entries
-            )
-            result = dhis2.push_data_values(
-                ou_uid,
-                str(st.session_state.selected_period),
-                st.session_state.selected_dataset,
-                ou_entries,
-                st.session_state.username,
-                st.session_state.password
-            )
-            response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
-            imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
-            imported += int(imp.get('importCount', {}).get('imported', 0) or 0)
-            updated += int(imp.get('importCount', {}).get('updated', 0) or 0)
-            ignored += int(imp.get('importCount', {}).get('ignored', 0) or 0)
-            ou_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
-            ou_message = imp.get('description', '') or imp.get('message', '') or ''
-            conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
-            if conflicts:
-                all_conflicts.append(conflicts)
-            if ou_status not in ('SUCCESS', 'OK'):
-                status = 'WARNING'
-            if ou_message:
-                message_parts.append(ou_message)
-            db.log_sync(
-                ou_uid,
-                st.session_state.selected_dataset,
-                str(st.session_state.selected_period),
-                len(ou_entries),
-                int(imp.get('importCount', {}).get('imported', 0) or 0),
-                int(imp.get('importCount', {}).get('updated', 0) or 0),
-                int(imp.get('importCount', {}).get('ignored', 0) or 0),
-                ou_status,
-                ou_message,
-                conflicts
-            )
+        with st.spinner("Pushing reviewed changes to DHIS2..."):
+            for index, (ou_uid, ou_entries_full) in enumerate(by_ou.items(), start=1):
+                status_placeholder.info(
+                    f"Pushing school {index} of {total_ous}: {st.session_state.selected_org_unit_labels.get(ou_uid, ou_uid)}"
+                )
+                ou_entries = [
+                    {'deUID': e['deUID'], 'cocUID': e['cocUID'], 'value': e['value']}
+                    for e in ou_entries_full
+                ]
+                db.save_local_values(
+                    ou_uid,
+                    str(st.session_state.selected_period),
+                    ou_entries
+                )
+                result = dhis2.push_data_values(
+                    ou_uid,
+                    str(st.session_state.selected_period),
+                    st.session_state.selected_dataset,
+                    ou_entries,
+                    st.session_state.username,
+                    st.session_state.password
+                )
+                response_block = result.get('response', {}) if isinstance(result.get('response', {}), dict) else {}
+                imp = result.get('importSummary') or response_block.get('importSummary') or response_block or result
+                imported += int(imp.get('importCount', {}).get('imported', 0) or 0)
+                updated += int(imp.get('importCount', {}).get('updated', 0) or 0)
+                ignored += int(imp.get('importCount', {}).get('ignored', 0) or 0)
+                ou_status = str(imp.get('status', 'UNKNOWN') or 'UNKNOWN')
+                ou_message = imp.get('description', '') or imp.get('message', '') or ''
+                conflicts = str(imp.get('conflicts', '')) if imp.get('conflicts') else ''
+                if conflicts:
+                    all_conflicts.append(conflicts)
+                if ou_status not in ('SUCCESS', 'OK'):
+                    status = 'WARNING'
+                if ou_message:
+                    message_parts.append(ou_message)
+                db.log_sync(
+                    ou_uid,
+                    st.session_state.selected_dataset,
+                    str(st.session_state.selected_period),
+                    len(ou_entries),
+                    int(imp.get('importCount', {}).get('imported', 0) or 0),
+                    int(imp.get('importCount', {}).get('updated', 0) or 0),
+                    int(imp.get('importCount', {}).get('ignored', 0) or 0),
+                    ou_status,
+                    ou_message,
+                    conflicts
+                )
+                progress.progress(index / total_ous, text=f"Pushed school {index} of {total_ous}")
 
         message = '; '.join(message_parts[:5])
         conflicts = '; '.join(all_conflicts[:5])
