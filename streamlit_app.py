@@ -1034,8 +1034,6 @@ def display_data_entry_interface():
     if _status_filter != 'All':
         filtered_rows = [r for r in filtered_rows if r['status'] in _filter_map[_status_filter]]
 
-    render_rows = filtered_rows
-
     # Summary statistics
     col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
     total = len(filtered_rows)
@@ -1086,53 +1084,18 @@ def display_data_entry_interface():
             st.rerun()
         st.markdown("---")
 
-    if is_high_volume:
-        school_options = sorted({r.get('orgUnitName', r.get('orgUnitUID', '')) for r in filtered_rows})
-        default_schools = st.session_state.get('perf_school_scope')
-        if not default_schools:
-            default_schools = school_options[: min(3, len(school_options))]
-            st.session_state['perf_school_scope'] = default_schools
-        scoped_schools = st.multiselect(
-            "Performance scope: schools to display",
-            options=school_options,
-            default=default_schools,
-            key='perf_school_scope',
-            help="Limits UI rendering while still keeping all rows available for push/review logic.",
-        )
-        if scoped_schools:
-            scoped_set = set(scoped_schools)
-            render_rows = [
-                r for r in filtered_rows
-                if r.get('orgUnitName', r.get('orgUnitUID', '')) in scoped_set
-            ]
-        st.caption(
-            f"High-volume mode: rendering {len(render_rows):,} of {len(filtered_rows):,} filtered rows "
-            f"for responsiveness."
-        )
-
     # Group by school + section
     sections = {}
-    for row in render_rows:
+    for row in filtered_rows:
         school_label = row.get('orgUnitName', row.get('orgUnitUID', ''))
         section = f"{school_label} :: {row['sectionName']}"
         if section not in sections:
             sections[section] = []
         sections[section].append(row)
 
-    sections_to_render = sections
-    if len(sections) > 12:
-        section_names = sorted(sections.keys())
-        focused_section = st.selectbox(
-            "Section focus (fast view)",
-            options=section_names,
-            key='perf_section_focus',
-            help="Shows one section at a time to keep rendering fast for large selections.",
-        )
-        sections_to_render = {focused_section: sections.get(focused_section, [])}
-
     # Activate edit mode for all sections (triggered by retry banner)
     if st.session_state.get('_force_all_sections_edit'):
-        for sn in sections_to_render:
+        for sn in sections:
             st.session_state['section_edit_modes'][sn] = True
         del st.session_state['_force_all_sections_edit']
 
@@ -1141,7 +1104,7 @@ def display_data_entry_interface():
         'missing_dhis2': '⬆️', 'both_empty': '⚪'
     }
 
-    for section_name, section_rows in sections_to_render.items():
+    for section_name, section_rows in sections.items():
         safe_key = re.sub(r'[^a-zA-Z0-9_]', '_', section_name)
         with st.expander(f"📁 {section_name} ({len(section_rows)} fields)", expanded=False):
             _sec_editing = st.session_state['section_edit_modes'].get(section_name, False)
