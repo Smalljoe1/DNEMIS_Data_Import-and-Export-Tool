@@ -1,6 +1,7 @@
 # streamlit_app.py
 import streamlit as st
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 st.set_page_config(layout="wide")
 import re
@@ -60,7 +61,8 @@ def init_session_state():
         'event_show_review': False,
         'event_has_unsaved_edits': False,
         'events_editor_rev': 0,
-        'aggregate_post_feedback': None
+        'aggregate_post_feedback': None,
+        'dhis2_cache_buster': 0
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -173,6 +175,20 @@ def load_dataset_org_units(dataset_uid, username, password):
         return dhis2.get_dataset_org_units(dataset_uid, username, password)
     except Exception:
         return []
+
+
+@st.cache_data(ttl=120)
+def load_data_values_cached(org_unit_uid, period, dataset_uid, username, password, id_scheme='uid', cache_buster=0):
+    """Cached wrapper around DHIS2 dataValueSets fetch for aggregate compare."""
+    _ = cache_buster
+    return dhis2.get_data_values(
+        org_unit_uid,
+        period,
+        dataset_uid,
+        username,
+        password,
+        id_scheme=id_scheme,
+    )
 
 # Main application
 def main_app():
@@ -572,9 +588,11 @@ def main_app():
                 st.warning("⚠️ Refreshing will discard your unsaved edits.")
                 if st.button("Discard & Refresh", key="confirm_refresh", type="primary"):
                     st.session_state.edited_values = {}
+                    st.session_state['dhis2_cache_buster'] = int(st.session_state.get('dhis2_cache_buster', 0) or 0) + 1
                     with st.spinner("Loading data from DHIS2..."):
                         load_comparison_data()
             else:
+                st.session_state['dhis2_cache_buster'] = int(st.session_state.get('dhis2_cache_buster', 0) or 0) + 1
                 with st.spinner("Loading data from DHIS2..."):
                     load_comparison_data()
     
@@ -786,6 +804,7 @@ def main_app():
                                 'title': f"✅ Successfully posted! Imported: {imported}, Updated: {updated}",
                                 'detail': message,
                             }
+                            st.session_state['dhis2_cache_buster'] = int(st.session_state.get('dhis2_cache_buster', 0) or 0) + 1
                             load_comparison_data()
                             st.rerun()
                         else:
@@ -905,11 +924,17 @@ def compare_data():
     
     expected_keys = {f"{el['deUID']}|{el['cocUID']}" for el in elements}
 
-    # Build rows across selected schools.
-    rows = []
-    for org_uid in selected_org_uids:
-        dhis2_values_uid = dhis2.get_data_values(
-            org_uid, period, dataset_uid, username, password, id_scheme='uid'
+    cache_buster = int(st.session_state.get('dhis2_cache_buster', 0) or 0)
+
+    def _fetch_org_context(org_uid):
+        dhis2_values_uid = load_data_values_cached(
+            org_uid,
+            period,
+            dataset_uid,
+            username,
+            password,
+            id_scheme='uid',
+            cache_buster=cache_buster,
         )
         local_values = db.get_local_values(org_uid, period)
         dhis2_values_name_norm = {}
@@ -917,8 +942,14 @@ def compare_data():
         fetched_uid_keys = set(dhis2_values_uid.keys())
         unmatched_fetched_uid_keys = fetched_uid_keys - expected_keys
         if unmatched_fetched_uid_keys:
-            dhis2_values_name = dhis2.get_data_values(
-                org_uid, period, dataset_uid, username, password, id_scheme='name'
+            dhis2_values_name = load_data_values_cached(
+                org_uid,
+                period,
+                dataset_uid,
+                username,
+                password,
+                id_scheme='name',
+                cache_buster=cache_buster,
             )
             for raw_key, value in dhis2_values_name.items():
                 de_name, coc_name = (raw_key.split('|', 1) + [''])[:2]
@@ -927,7 +958,29 @@ def compare_data():
                     norm_key = f"{de_norm}|{coc_variant}"
                     dhis2_values_name_norm[norm_key] = value
 
-        org_name = org_labels.get(org_uid, org_uid)
+        return {
+            'org_uid': org_uid,
+            'org_name': org_labels.get(org_uid, org_uid),
+            'dhis2_values_uid': dhis2_values_uid,
+            'dhis2_values_name_norm': dhis2_values_name_norm,
+            'local_values': local_values,
+        }
+
+    worker_count = min(8, max(1, len(selected_org_uids)))
+    if worker_count > 1:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            org_contexts = list(pool.map(_fetch_org_context, selected_org_uids))
+    else:
+        org_contexts = [_fetch_org_context(selected_org_uids[0])]
+
+    # Build rows across selected schools.
+    rows = []
+    for org_ctx in org_contexts:
+        org_uid = org_ctx['org_uid']
+        org_name = org_ctx['org_name']
+        dhis2_values_uid = org_ctx['dhis2_values_uid']
+        dhis2_values_name_norm = org_ctx['dhis2_values_name_norm']
+        local_values = org_ctx['local_values']
         for el in elements:
             key_uid = f"{el['deUID']}|{el['cocUID']}"
             de_norm = _norm_name(el['deName'])
