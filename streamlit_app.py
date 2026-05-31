@@ -1186,17 +1186,17 @@ def display_data_entry_interface():
         del st.session_state['_force_all_sections_edit']
 
     status_icons = {
-        'match': 'Ô£à', 'differs': 'ÔÜá´©Å', 'missing_local': '­ƒôØ',
-        'missing_dhis2': 'Ô¼å´©Å', 'both_empty': 'ÔÜ¬'
+        'match': '✅', 'differs': '⚠️', 'missing_local': '📝',
+        'missing_dhis2': '⬆️', 'both_empty': '⚪'
     }
 
     for section_name, section_rows in sections.items():
         safe_key = re.sub(r'[^a-zA-Z0-9_]', '_', section_name)
-        with st.expander(f"­ƒôü {section_name} ({len(section_rows)} fields)", expanded=False):
+        with st.expander(f"📁 {section_name} ({len(section_rows)} fields)", expanded=False):
             _sec_editing = st.session_state['section_edit_modes'].get(section_name, False)
             _spacer, _edit_col = st.columns([8, 1])
             with _edit_col:
-                _sec_toggle = st.checkbox("Ô£Å´©Å Edit", value=_sec_editing, key=f"sec_edit_{safe_key}")
+                _sec_toggle = st.checkbox("✏️ Edit", value=_sec_editing, key=f"sec_edit_{safe_key}")
             if _sec_toggle != _sec_editing:
                 st.session_state['section_edit_modes'][section_name] = _sec_toggle
                 if not _sec_toggle:
@@ -1231,12 +1231,12 @@ def display_data_entry_interface():
             else:
                 df_view = pd.DataFrame([
                     {
-                        'Status': status_icons.get(r['status'], 'ÔØô'),
+                        'Status': status_icons.get(r['status'], '❓'),
                         'Data Element': r['deName'],
                         'Disaggregation': r['cocName'] or 'Default',
                         'Type': r.get('deType', ''),
-                        'DHIS2 Value': r['dhis2Value'] or 'ÔÇö',
-                        'Local Value': r['localValue'] or 'ÔÇö',
+                        'DHIS2 Value': r['dhis2Value'] or '—',
+                        'Local Value': r['localValue'] or '—',
                     }
                     for r in section_rows
                 ])
