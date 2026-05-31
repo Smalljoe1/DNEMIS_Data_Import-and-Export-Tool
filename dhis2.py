@@ -1746,6 +1746,47 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
         except Exception:
             return text
 
+    def _extract_http_error_message(exc: requests.HTTPError) -> str:
+        """Extract the most useful server-side error details from an HTTP error."""
+        resp = exc.response
+        if resp is None:
+            return str(exc)
+        try:
+            body = resp.json()
+            parts = []
+            if isinstance(body, dict):
+                for key in ('message', 'description', 'httpStatus', 'httpStatusCode'):
+                    value = body.get(key)
+                    if value:
+                        parts.append(str(value))
+
+                response_block = body.get('response', {}) if isinstance(body.get('response', {}), dict) else {}
+                for key in ('message', 'description', 'status'):
+                    value = response_block.get(key)
+                    if value:
+                        parts.append(str(value))
+
+                conflicts = response_block.get('conflicts') or body.get('conflicts') or []
+                if isinstance(conflicts, list):
+                    for conflict in conflicts[:5]:
+                        if isinstance(conflict, dict):
+                            cval = conflict.get('value') or conflict.get('object') or conflict.get('message') or str(conflict)
+                        else:
+                            cval = str(conflict)
+                        if cval:
+                            parts.append(cval)
+
+            clean = [p.strip() for p in parts if str(p).strip()]
+            if clean:
+                return '; '.join(clean[:8])
+        except Exception:
+            pass
+
+        text = (resp.text or '').strip()
+        if text:
+            return text[:500]
+        return str(exc)
+
     small_payload = len(data_values) <= 250
 
     def _post_batch(batch: list) -> dict:
@@ -1823,7 +1864,26 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
                     }
                 mid = max(1, len(batch) // 2)
                 return _merge_results([_post_batch(batch[:mid]), _post_batch(batch[mid:])])
-            raise
+
+            detail = _extract_http_error_message(exc)
+
+            # Validation/conflict responses should be surfaced to the UI as warnings,
+            # not raised as generic exceptions.
+            if code in (400, 409):
+                return {
+                    'status': 'WARNING',
+                    'message': f'DHIS2 rejected {len(batch)} value(s) ({code}): {detail}',
+                    'imported': 0,
+                    'updated': 0,
+                    'ignored': len(batch),
+                    'uncertain': [],
+                }
+
+            # Authentication/authorization errors should stop immediately with clear detail.
+            if code in (401, 403):
+                raise ValueError(f'DHIS2 access error ({code}): {detail}')
+
+            raise ValueError(f'DHIS2 post failed ({code}): {detail}')
 
     parts = []
     for batch in _chunked(data_values, chunk_size=200):
@@ -1882,6 +1942,8 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
         'status': merged['status'],
         'message': merged['message'],
         'response': {
+            'status': merged['status'],
+            'description': merged['message'],
             'importCount': {
                 'imported': merged['imported'],
                 'updated': merged['updated'],
