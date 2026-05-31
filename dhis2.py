@@ -1746,15 +1746,18 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
         except Exception:
             return text
 
+    small_payload = len(data_values) <= 250
+
     def _post_batch(batch: list) -> dict:
         payload = {'dataValues': batch}
+        request_timeout = 60 if small_payload else TIMEOUT_LONG
         try:
             resp = requests.post(
                 f'{DHIS2_BASE}/dataValueSets',
                 auth=(username, password),
                 json=payload,
                 headers={**_JSON_HEADERS, 'Content-Type': 'application/json'},
-                timeout=TIMEOUT_LONG,
+                timeout=request_timeout,
             )
             resp.raise_for_status()
             try:
@@ -1763,7 +1766,23 @@ def push_data_values(org_unit_uid: str, period: str, dataset_uid: str,
                 body = {}
             return _result_from_json(body)
         except requests.exceptions.Timeout:
-            # Retry once with a longer timeout; if it still fails, split batch.
+            # For small single-school payloads, fail fast and verify after posting
+            # rather than waiting through long retries.
+            if small_payload:
+                if len(batch) <= 1:
+                    return {
+                        'status': 'WARNING',
+                        'message': 'Timed out posting 1 value. Verifying current DHIS2 state.',
+                        'imported': 0,
+                        'updated': 0,
+                        'ignored': 0,
+                        'uncertain': list(batch),
+                    }
+                mid = max(1, len(batch) // 2)
+                return _merge_results([_post_batch(batch[:mid]), _post_batch(batch[mid:])])
+
+            # Retry once with a longer timeout for large payloads; if it still
+            # fails, split batch.
             try:
                 retry_resp = requests.post(
                     f'{DHIS2_BASE}/dataValueSets',
