@@ -198,14 +198,15 @@ def load_data_values_cached(instance_url, org_unit_uid, period, dataset_uid, use
 
 # Main application
 def main_app():
-    if st.session_state.get('instance_url'):
-        dhis2.set_base_url(st.session_state.instance_url)
+    instance_url = str(st.session_state.get('instance_url', '') or '')
+    if instance_url:
+        dhis2.set_base_url(instance_url)
 
     # Sidebar with user info and navigation
     with st.sidebar:
         st.header(f"Welcome, {st.session_state.user_name}")
         if st.session_state.get('instance_url'):
-            st.caption(f"Active Instance: {st.session_state.instance_url}")
+            st.caption(f"Active Instance: {instance_url}")
         st.markdown(f"**Org Unit:** {st.session_state.school_name}")
         st.markdown(f"**Code:** {st.session_state.school_code}")
         st.markdown(f"**Ward:** {st.session_state.ward_name}")
@@ -233,7 +234,7 @@ def main_app():
         if st.session_state.data_mode == "Aggregate Forms":
             st.subheader("Select Dataset")
 
-            datasets = load_datasets(st.session_state.instance_url, st.session_state.username, st.session_state.password)
+            datasets = load_datasets(instance_url, st.session_state.username, st.session_state.password)
             dataset_options = {ds['name']: ds['id'] for ds in datasets}
 
             # Mapping from school type to dataset name substring
@@ -283,7 +284,7 @@ def main_app():
                 if curr_dataset_uid and prev_dataset_uid and curr_dataset_uid != prev_dataset_uid:
                     try:
                         level5_ous = load_descendant_level5_org_units(
-                            st.session_state.instance_url,
+                            instance_url,
                             st.session_state.get('root_org_unit_uid', ''),
                             st.session_state.username,
                             st.session_state.password,
@@ -294,7 +295,7 @@ def main_app():
                             if str(ou.get('id', '') or '')
                         }
                         dataset_ous = load_dataset_org_units(
-                            st.session_state.instance_url,
+                            instance_url,
                             curr_dataset_uid,
                             st.session_state.username,
                             st.session_state.password,
@@ -320,7 +321,7 @@ def main_app():
             # Org unit scope selection (after dataset): Level 3 users can target Level 5 schools under their LGA.
             if int(st.session_state.get('root_org_unit_level', 0) or 0) < 5:
                 level5_ous = load_descendant_level5_org_units(
-                    st.session_state.instance_url,
+                    instance_url,
                     st.session_state.get('root_org_unit_uid', ''),
                     st.session_state.username,
                     st.session_state.password,
@@ -332,7 +333,7 @@ def main_app():
                     dataset_filter_applied = False
                     if selected_dataset_uid:
                         dataset_org_units = load_dataset_org_units(
-                            st.session_state.instance_url,
+                            instance_url,
                             selected_dataset_uid,
                             st.session_state.username,
                             st.session_state.password,
@@ -400,7 +401,7 @@ def main_app():
                     if st.button("Keep editing", key="nav_keep"):
                         st.session_state['dataset_select'] = next(
                             (n for n, i in {ds['name']: ds['id'] for ds in load_datasets(
-                                st.session_state.instance_url, st.session_state.username, st.session_state.password)}.items()
+                                instance_url, st.session_state.username, st.session_state.password)}.items()
                              if i == st.session_state.get('_last_dataset')), None)
                         st.rerun()
                 with col_discard:
@@ -422,7 +423,7 @@ def main_app():
         else:
             if int(st.session_state.get('root_org_unit_level', 0) or 0) < 5:
                 level5_ous = load_descendant_level5_org_units(
-                    st.session_state.instance_url,
+                    instance_url,
                     st.session_state.get('root_org_unit_uid', ''),
                     st.session_state.username,
                     st.session_state.password,
@@ -468,7 +469,7 @@ def main_app():
                     st.caption("Events fetch/export/import/push will use all selected schools.")
 
             st.subheader("Select Program Stage")
-            programs = load_programs(st.session_state.instance_url, st.session_state.username, st.session_state.password)
+            programs = load_programs(instance_url, st.session_state.username, st.session_state.password)
             program_options = {p['name']: p['id'] for p in programs}
 
             if not program_options:
@@ -482,7 +483,7 @@ def main_app():
                 st.session_state.selected_program = program_options[selected_program_name]
 
                 stages = load_program_stages(
-                    st.session_state.instance_url,
+                    instance_url,
                     st.session_state.selected_program,
                     st.session_state.username,
                     st.session_state.password
@@ -513,7 +514,7 @@ def main_app():
                                 st.session_state.get('program_select')
                             )
                             prev_stages = load_program_stages(
-                                st.session_state.instance_url,
+                                instance_url,
                                 prev_program,
                                 st.session_state.username,
                                 st.session_state.password
@@ -572,7 +573,7 @@ def main_app():
     else:
         st.header(f"Data Entry - {st.session_state.school_name}")
     if st.session_state.get('instance_url'):
-        st.info(f"Active DHIS2 Instance: {st.session_state.instance_url}")
+        st.info(f"Active DHIS2 Instance: {instance_url}")
 
     # Pending navigation confirmation (logout with unsaved edits)
     if st.session_state.get('pending_nav') == 'logout':
@@ -870,6 +871,7 @@ def load_comparison_data():
 
 def compare_data():
     """Compare DHIS2 data with local data"""
+    instance_url = str(st.session_state.get('instance_url', '') or '')
     username = st.session_state.username
     password = st.session_state.password
     selected_org_uids = list(st.session_state.get('selected_org_units', []) or [])
@@ -948,7 +950,7 @@ def compare_data():
 
     def _fetch_org_context(org_uid):
         dhis2_values_uid = load_data_values_cached(
-            st.session_state.instance_url,
+            instance_url,
             org_uid,
             period,
             dataset_uid,
@@ -964,7 +966,7 @@ def compare_data():
         unmatched_fetched_uid_keys = fetched_uid_keys - expected_keys
         if unmatched_fetched_uid_keys:
             dhis2_values_name = load_data_values_cached(
-                st.session_state.instance_url,
+                instance_url,
                 org_uid,
                 period,
                 dataset_uid,
