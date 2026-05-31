@@ -1414,7 +1414,19 @@ def save_single_value(row, new_value):
 def display_sync_logs():
     """Display sync audit dashboard and history with conflict inspection"""
     try:
-        logs = db.get_sync_logs(st.session_state.org_unit_uid)
+        selected_ous = [
+            str(uid or '').strip()
+            for uid in (st.session_state.get('selected_org_units', []) or [])
+            if str(uid or '').strip()
+        ]
+        if not selected_ous:
+            selected_ous = [str(st.session_state.org_unit_uid or '').strip()]
+
+        if len(selected_ous) > 1:
+            logs = db.get_sync_logs_for_org_units(selected_ous, limit=300)
+            st.caption(f"Showing sync history for {len(selected_ous)} selected school(s).")
+        else:
+            logs = db.get_sync_logs(selected_ous[0])
         if not logs:
             st.info("No sync logs found")
             return

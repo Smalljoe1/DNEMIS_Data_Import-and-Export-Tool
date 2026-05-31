@@ -142,3 +142,21 @@ def get_sync_logs(org_unit_uid: str) -> list:
             (org_unit_uid,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_sync_logs_for_org_units(org_unit_uids: list, limit: int = 200) -> list:
+    """Return recent sync logs across multiple org units (most recent first)."""
+    uids = [str(uid or '').strip() for uid in (org_unit_uids or []) if str(uid or '').strip()]
+    if not uids:
+        return []
+
+    # Keep query bounds reasonable for dashboard rendering.
+    bounded_limit = max(1, min(int(limit or 200), 1000))
+    placeholders = ','.join(['?'] * len(uids))
+    sql = (
+        f"SELECT * FROM sync_logs WHERE orgUnitUID IN ({placeholders}) "
+        "ORDER BY syncedAt DESC LIMIT ?"
+    )
+    with _conn() as conn:
+        rows = conn.execute(sql, [*uids, bounded_limit]).fetchall()
+    return [dict(r) for r in rows]
