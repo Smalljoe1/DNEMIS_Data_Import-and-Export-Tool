@@ -59,7 +59,8 @@ def init_session_state():
         'event_last_uploaded_template_sig': '',
         'event_show_review': False,
         'event_has_unsaved_edits': False,
-        'events_editor_rev': 0
+        'events_editor_rev': 0,
+        'aggregate_post_feedback': None
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -710,6 +711,7 @@ def main_app():
         # Post all local values to DHIS2 (outside edit mode)
         if not st.session_state.edit_mode:
             if st.button("Post All Local Values to DHIS2", type="primary"):
+                st.session_state['aggregate_post_feedback'] = None
                 # Gather all local values and push
                 rows = st.session_state.compare_results['rows']
                 entries = [
@@ -779,12 +781,19 @@ def main_app():
 
                         message = '; '.join(message_parts[:5])
                         if status in ('SUCCESS', 'OK'):
-                            st.success(f"✅ Successfully posted! Imported: {imported}, Updated: {updated}")
+                            st.session_state['aggregate_post_feedback'] = {
+                                'level': 'success',
+                                'title': f"✅ Successfully posted! Imported: {imported}, Updated: {updated}",
+                                'detail': message,
+                            }
                             load_comparison_data()
                             st.rerun()
                         else:
-                            st.warning(f"⚠️ Post completed with warnings: {status}")
-                            st.info(f"Imported: {imported}, Updated: {updated}, Ignored: {ignored}")
+                            st.session_state['aggregate_post_feedback'] = {
+                                'level': 'warning',
+                                'title': f"⚠️ Post completed with warnings: {status}",
+                                'detail': f"Imported: {imported}, Updated: {updated}, Ignored: {ignored}" + (f". {message}" if message else ''),
+                            }
                             st.rerun()
                     except Exception as e:
                         db.log_sync(
@@ -794,7 +803,12 @@ def main_app():
                             len(entries), 0, 0, len(entries),
                             'ERROR', str(e), ''
                         )
-                        st.error(f"Failed to post to DHIS2: {str(e)}")
+                        st.session_state['aggregate_post_feedback'] = {
+                            'level': 'error',
+                            'title': "Failed to post to DHIS2",
+                            'detail': str(e),
+                        }
+                        st.rerun()
 
     # Sync logs section
     with st.expander("Sync History"):
@@ -966,6 +980,30 @@ def compare_data():
 def display_data_entry_interface():
     """Display the data entry interface with table-based editable fields"""
     rows = st.session_state.compare_results['rows']
+    is_high_volume = len(rows) > 5000
+
+    if 'status_filter' not in st.session_state:
+        st.session_state['status_filter'] = 'Needs Attention' if is_high_volume else 'All'
+
+    feedback = st.session_state.get('aggregate_post_feedback')
+    if isinstance(feedback, dict):
+        level = str(feedback.get('level', 'info') or 'info').lower()
+        title = str(feedback.get('title', '') or '').strip()
+        detail = str(feedback.get('detail', '') or '').strip()
+        if level == 'success':
+            st.success(title or "Last push completed successfully.")
+        elif level == 'warning':
+            st.warning(title or "Last push completed with warnings.")
+        elif level == 'error':
+            st.error(title or "Last push failed.")
+        else:
+            st.info(title or "Last push result available.")
+        if detail:
+            st.caption(detail)
+        if st.button("Dismiss last push message", key="dismiss_aggregate_feedback"):
+            st.session_state['aggregate_post_feedback'] = None
+            st.rerun()
+        st.markdown("---")
 
     # Data element search box
     search_term = st.text_input("Search data elements or disaggregations...", value=st.session_state.get('search_term', ''), key="search_box")
@@ -995,6 +1033,8 @@ def display_data_entry_interface():
     }
     if _status_filter != 'All':
         filtered_rows = [r for r in filtered_rows if r['status'] in _filter_map[_status_filter]]
+
+    render_rows = filtered_rows
 
     # Summary statistics
     col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
@@ -1046,18 +1086,53 @@ def display_data_entry_interface():
             st.rerun()
         st.markdown("---")
 
+    if is_high_volume:
+        school_options = sorted({r.get('orgUnitName', r.get('orgUnitUID', '')) for r in filtered_rows})
+        default_schools = st.session_state.get('perf_school_scope')
+        if not default_schools:
+            default_schools = school_options[: min(3, len(school_options))]
+            st.session_state['perf_school_scope'] = default_schools
+        scoped_schools = st.multiselect(
+            "Performance scope: schools to display",
+            options=school_options,
+            default=default_schools,
+            key='perf_school_scope',
+            help="Limits UI rendering while still keeping all rows available for push/review logic.",
+        )
+        if scoped_schools:
+            scoped_set = set(scoped_schools)
+            render_rows = [
+                r for r in filtered_rows
+                if r.get('orgUnitName', r.get('orgUnitUID', '')) in scoped_set
+            ]
+        st.caption(
+            f"High-volume mode: rendering {len(render_rows):,} of {len(filtered_rows):,} filtered rows "
+            f"for responsiveness."
+        )
+
     # Group by school + section
     sections = {}
-    for row in filtered_rows:
+    for row in render_rows:
         school_label = row.get('orgUnitName', row.get('orgUnitUID', ''))
         section = f"{school_label} :: {row['sectionName']}"
         if section not in sections:
             sections[section] = []
         sections[section].append(row)
 
+    sections_to_render = sections
+    if len(sections) > 12:
+        section_names = sorted(sections.keys())
+        focused_section = st.selectbox(
+            "Section focus (fast view)",
+            options=section_names,
+            key='perf_section_focus',
+            help="Shows one section at a time to keep rendering fast for large selections.",
+        )
+        sections_to_render = {focused_section: sections.get(focused_section, [])}
+
     # Activate edit mode for all sections (triggered by retry banner)
     if st.session_state.get('_force_all_sections_edit'):
-        for sn in sections:
+        for sn in sections_to_render:
             st.session_state['section_edit_modes'][sn] = True
         del st.session_state['_force_all_sections_edit']
 
@@ -1066,9 +1141,9 @@ def display_data_entry_interface():
         'missing_dhis2': '⬆️', 'both_empty': '⚪'
     }
 
-    for section_name, section_rows in sections.items():
+    for section_name, section_rows in sections_to_render.items():
         safe_key = re.sub(r'[^a-zA-Z0-9_]', '_', section_name)
-        with st.expander(f"📁 {section_name} ({len(section_rows)} fields)", expanded=True):
+        with st.expander(f"📁 {section_name} ({len(section_rows)} fields)", expanded=False):
             _sec_editing = st.session_state['section_edit_modes'].get(section_name, False)
             _spacer, _edit_col = st.columns([8, 1])
             with _edit_col:
@@ -3167,6 +3242,7 @@ def _validate_push_entries(entries, rows):
 
 def push_to_dhis2():
     """Push edited values to DHIS2"""
+    st.session_state['aggregate_post_feedback'] = None
     if not st.session_state.edited_values:
         st.warning("No changes to push")
         return
@@ -3263,7 +3339,11 @@ def push_to_dhis2():
         message = '; '.join(message_parts[:5])
         conflicts = '; '.join(all_conflicts[:5])
         if status in ('SUCCESS', 'OK'):
-            st.success(f"✅ Successfully synced! Imported: {imported}, Updated: {updated}")
+            st.session_state['aggregate_post_feedback'] = {
+                'level': 'success',
+                'title': f"✅ Successfully synced! Imported: {imported}, Updated: {updated}",
+                'detail': message,
+            }
             st.session_state.edited_values = {}
             st.session_state['section_edit_modes'] = {}
             st.session_state['retry_entries'] = []
@@ -3298,8 +3378,11 @@ def push_to_dhis2():
             }
             if not st.session_state.edited_values:
                 st.session_state['section_edit_modes'] = {}
-            st.warning(f"⚠️ Sync completed with warnings: {status}")
-            st.info(f"Imported: {imported}, Updated: {updated}, Ignored: {ignored}")
+            st.session_state['aggregate_post_feedback'] = {
+                'level': 'warning',
+                'title': f"⚠️ Sync completed with warnings: {status}",
+                'detail': f"Imported: {imported}, Updated: {updated}, Ignored: {ignored}" + (f". {message}" if message else ''),
+            }
     except Exception as e:
         db.log_sync(
             st.session_state.org_unit_uid,
@@ -3311,7 +3394,11 @@ def push_to_dhis2():
             str(e),
             ''
         )
-        st.error(f"Failed to push to DHIS2: {str(e)}")
+        st.session_state['aggregate_post_feedback'] = {
+            'level': 'error',
+            'title': "Failed to push to DHIS2",
+            'detail': str(e),
+        }
 
 # Main execution
 init_session_state()
