@@ -396,7 +396,7 @@ def main_app():
             _per_changed = st.session_state.get('_last_period') != str(st.session_state.selected_period)
             _ou_changed = st.session_state.get('_last_org_units') != list(st.session_state.get('selected_org_units', []))
             if (_ds_changed or _per_changed or _ou_changed) and st.session_state.edited_values:
-                st.warning("ÔÜá´©Å You have unsaved edits. Switching dataset/period/org units will discard them.")
+                st.warning("⚠️ You have unsaved edits. Switching dataset/period/org units will discard them.")
                 col_keep, col_discard = st.columns(2)
                 with col_keep:
                     if st.button("Keep editing", key="nav_keep"):
@@ -504,7 +504,7 @@ def main_app():
             _ou_changed = st.session_state.get('_last_org_units_events') != list(st.session_state.get('selected_org_units', []))
 
             if (_prog_changed or _stage_changed or _per_changed or _ou_changed) and st.session_state.get('event_has_unsaved_edits'):
-                st.warning("ÔÜá´©Å You have unsaved event edits. Switching context will discard them.")
+                st.warning("⚠️ You have unsaved event edits. Switching context will discard them.")
                 keep_col, discard_col = st.columns(2)
                 with keep_col:
                     if st.button("Keep editing", key="events_nav_keep"):
@@ -554,11 +554,11 @@ def main_app():
             remaining = st.session_state.auth_expiry - datetime.now(timezone.utc)
             mins = int(remaining.total_seconds() // 60)
             if remaining.total_seconds() <= 0:
-                st.error("Session expired ÔÇö please log in again.")
+                st.error("Session expired - please log in again.")
             elif mins <= 15:
-                st.warning(f"ÔÜá´©Å Session expires in {mins} min")
+                st.warning(f"⚠️ Session expires in {mins} min")
             else:
-                st.caption(f"­ƒöÆ Session valid for {mins} min")
+                st.caption(f"⏳ Session valid for {mins} min")
 
         st.markdown("---")
         if st.button("Logout", type="secondary"):
@@ -578,7 +578,7 @@ def main_app():
 
     # Pending navigation confirmation (logout with unsaved edits)
     if st.session_state.get('pending_nav') == 'logout':
-        st.warning("ÔÜá´©Å You have unsaved edits. Are you sure you want to logout? Your local edits will be lost.")
+        st.warning("⚠️ You have unsaved edits. Are you sure you want to logout? Your local edits will be lost.")
         col_stay, col_go = st.columns(2)
         with col_stay:
             if st.button("Stay", key="logout_stay"):
@@ -607,7 +607,7 @@ def main_app():
     with col2:
         if st.button("Refresh Data", type="primary"):
             if st.session_state.edited_values:
-                st.warning("ÔÜá´©Å Refreshing will discard your unsaved edits.")
+                st.warning("⚠️ Refreshing will discard your unsaved edits.")
                 if st.button("Discard & Refresh", key="confirm_refresh", type="primary"):
                     st.session_state.edited_values = {}
                     st.session_state['dhis2_cache_buster'] = int(st.session_state.get('dhis2_cache_buster', 0) or 0) + 1
@@ -742,7 +742,7 @@ def main_app():
                                     'value': raw
                                 })
                         if errors:
-                            st.warning(f"ÔÜá´©Å {len(errors)} row(s) failed validation and were skipped:")
+                            st.warning(f"⚠️ {len(errors)} row(s) failed validation and were skipped:")
                             st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
                         if entries:
                             by_ou = {}
@@ -919,7 +919,7 @@ def main_app():
                         if status in ('SUCCESS', 'OK'):
                             st.session_state['aggregate_post_feedback'] = {
                                 'level': 'success',
-                                'title': f"Ô£à Successfully posted! Imported: {imported}, Updated: {updated}",
+                                'title': f"✅ Successfully posted! Imported: {imported}, Updated: {updated}",
                                 'detail': message,
                             }
                             st.session_state['dhis2_cache_buster'] = int(st.session_state.get('dhis2_cache_buster', 0) or 0) + 1
@@ -928,7 +928,7 @@ def main_app():
                         else:
                             st.session_state['aggregate_post_feedback'] = {
                                 'level': 'warning',
-                                'title': f"ÔÜá´©Å Post completed with warnings: {status}",
+                                'title': f"⚠️ Post completed with warnings: {status}",
                                 'detail': f"Imported: {imported}, Updated: {updated}, Ignored: {ignored}" + (f". {message}" if message else ''),
                             }
                             st.rerun()
@@ -1219,13 +1219,13 @@ def display_data_entry_interface():
     with col1:
         st.metric("Total Fields", total)
     with col2:
-        st.metric("Matched", matches, delta="Ô£ô")
+        st.metric("Matched", matches, delta="✅")
     with col3:
-        st.metric("Differs", differs, delta="ÔÜá´©Å" if differs > 0 else None)
+        st.metric("Differs", differs, delta="⚠️" if differs > 0 else None)
     with col4:
-        st.metric("Missing Local", missing_local, delta="­ƒôØ")
+        st.metric("Missing Local", missing_local, delta="📝")
     with col5:
-        st.metric("Missing DHIS2", missing_dhis2, delta="Ô¼å´©Å")
+        st.metric("Missing DHIS2", missing_dhis2, delta="⬆️")
 
     cr = st.session_state.compare_results
     diag_parts = []
@@ -1234,7 +1234,7 @@ def display_data_entry_interface():
     if cr.get('duplicate_rows_removed', 0) > 0:
         diag_parts.append(f"{cr['duplicate_rows_removed']} duplicate row(s) removed from dataset metadata")
     if diag_parts:
-        st.info("Ôä╣´©Å " + " ┬À ".join(diag_parts))
+        st.info("ℹ️ " + " • ".join(diag_parts))
 
     st.markdown("---")
 
@@ -1246,8 +1246,8 @@ def display_data_entry_interface():
     # Retry banner for ignored rows from last push
     if st.session_state.get('retry_entries'):
         retry_list = st.session_state['retry_entries']
-        st.warning(f"ÔÜá´©Å {len(retry_list)} row(s) were ignored by DHIS2 in the last push and need attention.")
-        if st.button("­ƒöä Load ignored rows into Edit Mode", key="load_retry"):
+        st.warning(f"⚠️ {len(retry_list)} row(s) were ignored by DHIS2 in the last push and need attention.")
+        if st.button("🛠️ Load ignored rows into Edit Mode", key="load_retry"):
             row_lookup = {r['row_key']: r for r in rows}
             for entry in retry_list:
                 key = f"{entry['deUID']}|{entry['cocUID']}"
@@ -1346,7 +1346,7 @@ def display_data_entry_interface():
 
 def display_push_review():
     """Show a pre-push diff table and ask for confirmation before sending to DHIS2"""
-    st.subheader("­ƒôï Review Changes Before Pushing to DHIS2")
+    st.subheader("🔎 Review Changes Before Pushing to DHIS2")
     st.markdown("---")
 
     rows = st.session_state.compare_results['rows']
@@ -1360,14 +1360,14 @@ def display_push_review():
                 'Data Element': row['deName'],
                 'Disaggregation': row['cocName'] or 'Default',
                 'Type': row.get('deType', ''),
-                'Current DHIS2': row['dhis2Value'] or 'ÔÇö',
-                'Old Local': row['localValue'] or 'ÔÇö',
+                'Current DHIS2': row['dhis2Value'] or '—',
+                'Old Local': row['localValue'] or '—',
                 'New Value': new_val,
             })
 
     if not changed:
         st.info("No changes detected to push.")
-        if st.button("ÔåÉ Go Back"):
+        if st.button("← Go Back"):
             st.session_state['show_push_review'] = False
             st.rerun()
         return
@@ -1378,11 +1378,11 @@ def display_push_review():
 
     col1, col2 = st.columns([1, 5])
     with col1:
-        if st.button("Ô£à Confirm & Push", type="primary"):
+        if st.button("✅ Confirm & Push", type="primary"):
             st.session_state['show_push_review'] = False
             st.session_state['_do_push'] = True
     with col2:
-        if st.button("ÔåÉ Cancel, Go Back", type="secondary"):
+        if st.button("← Cancel, Go Back", type="secondary"):
             st.session_state['show_push_review'] = False
             st.rerun()
 
@@ -1433,7 +1433,7 @@ def display_sync_logs():
 
         df_all = pd.DataFrame(logs)
 
-        # ÔöÇÔöÇ Audit dashboard ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+        # Audit dashboard
         total_syncs = len(df_all)
         success_mask = df_all['dhis2Status'].isin(['SUCCESS', 'OK'])
         error_mask = df_all['dhis2Status'] == 'ERROR'
@@ -1446,7 +1446,7 @@ def display_sync_logs():
 
         def _fmt_ts(ts):
             if ts is None:
-                return 'ÔÇö'
+                return '—'
             try:
                 return pd.to_datetime(ts).strftime('%Y-%m-%d %H:%M')
             except Exception:
@@ -1469,11 +1469,11 @@ def display_sync_logs():
             )
             with st.expander("Top error messages"):
                 for msg, cnt in top_errors.items():
-                    st.markdown(f"- **{cnt}├ù** `{msg or '(no message)'}`")
+                    st.markdown(f"- **{cnt}x** `{msg or '(no message)'}`")
 
         st.markdown("---")
 
-        # ÔöÇÔöÇ Log table ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+        # Log table
         df_all['Time'] = pd.to_datetime(df_all['syncedAt']).dt.strftime('%Y-%m-%d %H:%M')
         display_cols = ['Time', 'dhis2Status', 'batchSize', 'imported', 'updated', 'ignored', 'dhis2Message']
         df_display = df_all[display_cols].rename(columns={
@@ -1486,20 +1486,20 @@ def display_sync_logs():
         })
         st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-        # ÔöÇÔöÇ Per-row conflict inspection ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+        # Per-row conflict inspection
         conflict_rows = [r for r in logs if r.get('conflictDetails') and r['conflictDetails'] not in ('', '[]', 'None', None)]
         if conflict_rows:
-            with st.expander(f"­ƒöì Conflict details ({len(conflict_rows)} sync(s) with conflicts)"):
+            with st.expander(f"🔍 Conflict details ({len(conflict_rows)} sync(s) with conflicts)"):
                 for r in conflict_rows[:10]:
                     ts = _fmt_ts(r.get('syncedAt'))
-                    st.markdown(f"**{ts}** ÔÇö status: `{r.get('dhis2Status')}`")
+                    st.markdown(f"**{ts}** - status: `{r.get('dhis2Status')}`")
                     raw = r.get('conflictDetails', '')
                     try:
                         parsed = json.loads(raw) if raw.startswith('[') else raw
                         if isinstance(parsed, list):
                             for c in parsed:
                                 obj = c if isinstance(c, str) else str(c)
-                                st.caption(f"ÔÇó {obj}")
+                                st.caption(f"• {obj}")
                         else:
                             st.caption(raw)
                     except Exception:
@@ -1799,7 +1799,7 @@ def _validate_event_changes(changes):
                 if de_type == 'INTEGER_POSITIVE' and num <= 0:
                     issue = f"Must be > 0 (got {val})"
                 elif de_type == 'INTEGER_ZERO_OR_POSITIVE' and num < 0:
-                    issue = f"Must be ÔëÑ 0 (got {val})"
+                    issue = f"Must be >= 0 (got {val})"
                 elif de_type == 'INTEGER_NEGATIVE' and num >= 0:
                     issue = f"Must be < 0 (got {val})"
                 elif de_type == 'UNIT_INTERVAL' and not (0 <= num <= 1):
@@ -1890,7 +1890,7 @@ def push_events_to_dhis2(changes):
     """Push validated event data value changes to DHIS2."""
     clean_changes, issues = _validate_event_changes(changes)
     if issues:
-        st.warning(f"ÔÜá´©Å {len(issues)} event value(s) failed validation and were removed from this push:")
+        st.warning(f"⚠️ {len(issues)} event value(s) failed validation and were removed from this push:")
         st.dataframe(pd.DataFrame(issues), use_container_width=True, hide_index=True)
     if not clean_changes:
         st.error("No valid event changes to push.")
@@ -2042,7 +2042,7 @@ def push_events_to_dhis2(changes):
         })
 
     if create_issues:
-        st.warning(f"ÔÜá´©Å {len(create_issues)} new-row issue(s) were found and those rows were skipped:")
+        st.warning(f"⚠️ {len(create_issues)} new-row issue(s) were found and those rows were skipped:")
         st.dataframe(pd.DataFrame(create_issues), use_container_width=True, hide_index=True)
 
     try:
@@ -2084,14 +2084,14 @@ def push_events_to_dhis2(changes):
                     if str(g.get('personId', '') or '').strip()
                 ]
                 if bulk_bundle_result.get('errors'):
-                    st.warning(f"ÔÜá´©Å Bulk tracker bundle warnings: {'; '.join(bulk_bundle_result['errors'][:3])}")
+                    st.warning(f"⚠️ Bulk tracker bundle warnings: {'; '.join(bulk_bundle_result['errors'][:3])}")
 
         for create_group in remaining_create_groups:
             tei_uid = str(create_group.get('personId', '') or '').strip()
             person_label = create_group['personName'] or create_group['rowId']
             event_only = bool(create_group.get('eventOnly', False))
 
-            # ÔöÇÔöÇ If TEI already exists, resolve enrollment then create event only ÔöÇÔöÇ
+            # If TEI already exists, resolve enrollment then create event only.
             if tei_uid:
                 existing_enrollment_uid = dhis2.get_existing_enrollment_for_tei(
                     st.session_state.selected_program,
@@ -2129,12 +2129,12 @@ def push_events_to_dhis2(changes):
                         raise ValueError(f"Failed to create event for {person_label}: no event UID returned")
                     created_rows += 1
                     continue
-                # No existing enrollment ÔÇö fall through to create enrollment + event below
+                # No existing enrollment - fall through to create enrollment + event below.
                 if event_only:
                     st.warning(f"Skipped event-only import row for {person_label}: no enrollment found for Person ID {tei_uid}.")
                     continue
 
-            # ÔöÇÔöÇ Try new single-call /tracker bundle (TEI + enrollment + event) ÔöÇÔöÇ
+            # Try new single-call /tracker bundle (TEI + enrollment + event).
             if event_only:
                 st.warning(f"Skipped event-only import row for {person_label}: Person ID is missing.")
                 continue
@@ -2154,16 +2154,16 @@ def push_events_to_dhis2(changes):
             )
 
             if bundle_result['status'] == 'NOT_FOUND':
-                bundle_result = None  # Server doesn't support /tracker ÔÇö use old flow below
+                bundle_result = None  # Server doesn't support /tracker; use old flow below.
             elif bundle_result['status'] in ('OK', 'WARNING'):
                 if bundle_result['errors']:
-                    st.warning(f"ÔÜá´©Å {person_label}: {'; '.join(bundle_result['errors'][:3])}")
+                    st.warning(f"⚠️ {person_label}: {'; '.join(bundle_result['errors'][:3])}")
                 created_rows += 1
                 continue
             else:
-                bundle_result = None  # /tracker returned error ÔÇö fall back to old flow
+                bundle_result = None  # /tracker returned error; fall back to old flow.
 
-            # ÔöÇÔöÇ Fallback: old sequential flow (/trackedEntityInstances ÔåÆ /enrollments ÔåÆ /events) ÔöÇÔöÇ
+            # Fallback: old sequential flow (/trackedEntityInstances -> /enrollments -> /events).
             if not tei_uid:
                 tei_result = dhis2.create_tracked_entity_instance(
                     program_meta.get('trackedEntityType', ''),
@@ -2218,7 +2218,7 @@ def push_events_to_dhis2(changes):
                 import requests as _req
                 event_uid = ''
                 is_timeout = isinstance(create_ev_exc, _req.exceptions.Timeout)
-                create_event_error = ('Request timed out ÔÇö DHIS2 may still have created the event. ' if is_timeout else '') + str(create_ev_exc)
+                create_event_error = ('Request timed out - DHIS2 may still have created the event. ' if is_timeout else '') + str(create_ev_exc)
             lookup_error = ''
             if not event_uid:
                 try:
@@ -2297,7 +2297,7 @@ def push_events_to_dhis2(changes):
 
         if str(final_status).upper() in ('SUCCESS', 'OK') and total_ignored == 0:
             st.success(
-                "Ô£à Events synced successfully. "
+                "✅ Events synced successfully. "
                 f"Updated events: {len(updates)}, updated enrollments: {len(enrollment_updates)}, created staff rows: {created_rows}"
             )
             if unverified_created_rows > 0:
@@ -2306,7 +2306,7 @@ def push_events_to_dhis2(changes):
                 )
             return True
 
-        st.warning(f"ÔÜá´©Å Event sync completed with warnings: {final_status}")
+        st.warning(f"⚠️ Event sync completed with warnings: {final_status}")
         st.info(f"Updated: {total_updated}, Ignored: {total_ignored}")
         return False
     except Exception as e:
@@ -2353,13 +2353,13 @@ def display_events_interface():
     attr_stats = st.session_state.get('event_attr_stats', {})
     if st.session_state.get('event_attr_columns'):
         st.caption(
-            f"Program attributes loaded: {attr_stats.get('program_attributes', 0)} ┬À "
-            f"events: {attr_stats.get('events', 0)} ┬À "
-            f"persons: {attr_stats.get('tei_ids', 0)} ┬À "
-            f"rows with attribute values: {attr_stats.get('rows_with_values', 0)} ┬À "
-            f"direct TEI hits: {attr_stats.get('direct_hits', 0)} ┬À "
-            f"bulk enrollment hits: {attr_stats.get('bulk_enrollment_hits', 0)} ┬À "
-            f"per-TEI enrollment hits: {attr_stats.get('per_tei_enrollment_hits', 0)} ┬À "
+            f"Program attributes loaded: {attr_stats.get('program_attributes', 0)} • "
+            f"events: {attr_stats.get('events', 0)} • "
+            f"persons: {attr_stats.get('tei_ids', 0)} • "
+            f"rows with attribute values: {attr_stats.get('rows_with_values', 0)} • "
+            f"direct TEI hits: {attr_stats.get('direct_hits', 0)} • "
+            f"bulk enrollment hits: {attr_stats.get('bulk_enrollment_hits', 0)} • "
+            f"per-TEI enrollment hits: {attr_stats.get('per_tei_enrollment_hits', 0)} • "
             f"program TEI hits: {attr_stats.get('program_tei_hits', 0)}"
         )
 
@@ -3205,7 +3205,7 @@ def display_events_interface():
     if imported_create_changes:
         changes.extend(imported_create_changes)
 
-    # Deduplicate: same (eventId, deUID) from both paths ÔåÆ keep last entry
+    # Deduplicate: same (eventId, deUID) from both paths -> keep last entry.
     seen_keys = {}
     for ch in changes:
         dedupe_event = ch.get('eventId', '') or ch.get('templateRowId', '')
@@ -3216,7 +3216,7 @@ def display_events_interface():
 
     if st.session_state.get('event_show_review'):
         st.markdown("---")
-        st.subheader("­ƒôï Review Event Changes Before Pushing")
+        st.subheader("🔎 Review Event Changes Before Pushing")
         visible_changes = [c for c in changes if c.get('changeType') != 'CREATE_PERSON_ID']
         st.info(f"**{len(visible_changes)} field value(s)** will be updated in DHIS2 events.")
         if changes:
@@ -3246,7 +3246,7 @@ def display_events_interface():
 
         r1, r2 = st.columns([1, 4])
         with r1:
-            if st.button("Ô£à Confirm Event Push", type="primary"):
+            if st.button("✅ Confirm Event Push", type="primary"):
                 ok = push_events_to_dhis2(changes)
                 if ok:
                     with st.spinner("Refreshing events..."):
@@ -3254,7 +3254,7 @@ def display_events_interface():
                         st.session_state['events_editor_rev'] += 1
                         st.session_state['event_show_review'] = False
         with r2:
-            if st.button("ÔåÉ Cancel", key="cancel_event_review"):
+            if st.button("← Cancel", key="cancel_event_review"):
                 st.session_state['event_show_review'] = False
                 st.rerun()
     else:
@@ -3359,7 +3359,7 @@ def _validate_push_entries(entries, rows):
                 if de_type == 'INTEGER_POSITIVE' and num <= 0:
                     issue = f"Must be > 0 (got {val})"
                 elif de_type == 'INTEGER_ZERO_OR_POSITIVE' and num < 0:
-                    issue = f"Must be ÔëÑ 0 (got {val})"
+                    issue = f"Must be >= 0 (got {val})"
                 elif de_type == 'INTEGER_NEGATIVE' and num >= 0:
                     issue = f"Must be < 0 (got {val})"
                 elif de_type == 'UNIT_INTERVAL' and not (0 <= num <= 1):
@@ -3427,10 +3427,10 @@ def push_to_dhis2():
     rows = st.session_state.compare_results['rows']
     entries, dq_issues = _validate_push_entries(entries, rows)
     if dq_issues:
-        st.warning(f"ÔÜá´©Å {len(dq_issues)} value(s) failed quality checks and were removed from this push:")
+        st.warning(f"⚠️ {len(dq_issues)} value(s) failed quality checks and were removed from this push:")
         st.dataframe(pd.DataFrame(dq_issues), use_container_width=True, hide_index=True)
     if not entries:
-        st.error("All values failed validation ÔÇö nothing was sent to DHIS2.")
+        st.error("All values failed validation - nothing was sent to DHIS2.")
         return
 
     try:
@@ -3554,7 +3554,7 @@ def push_to_dhis2():
         if status in ('SUCCESS', 'OK'):
             st.session_state['aggregate_post_feedback'] = {
                 'level': 'success',
-                'title': f"Ô£à Successfully synced! Imported: {imported}, Updated: {updated}",
+                'title': f"✅ Successfully synced! Imported: {imported}, Updated: {updated}",
                 'detail': message,
             }
             st.session_state.edited_values = {}
@@ -3593,7 +3593,7 @@ def push_to_dhis2():
                 st.session_state['section_edit_modes'] = {}
             st.session_state['aggregate_post_feedback'] = {
                 'level': 'warning',
-                'title': f"ÔÜá´©Å Sync completed with warnings: {status}",
+                'title': f"⚠️ Sync completed with warnings: {status}",
                 'detail': f"Imported: {imported}, Updated: {updated}, Ignored: {ignored}" + (f". {message}" if message else ''),
             }
     except Exception as e:
