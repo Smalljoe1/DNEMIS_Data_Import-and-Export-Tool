@@ -204,6 +204,8 @@ def main_app():
     # Sidebar with user info and navigation
     with st.sidebar:
         st.header(f"Welcome, {st.session_state.user_name}")
+        if st.session_state.get('instance_url'):
+            st.caption(f"Active Instance: {st.session_state.instance_url}")
         st.markdown(f"**Org Unit:** {st.session_state.school_name}")
         st.markdown(f"**Code:** {st.session_state.school_code}")
         st.markdown(f"**Ward:** {st.session_state.ward_name}")
@@ -569,6 +571,8 @@ def main_app():
         st.header(f"Data Entry - {len(selected_ous)} Selected Schools")
     else:
         st.header(f"Data Entry - {st.session_state.school_name}")
+    if st.session_state.get('instance_url'):
+        st.info(f"Active DHIS2 Instance: {st.session_state.instance_url}")
 
     # Pending navigation confirmation (logout with unsaved edits)
     if st.session_state.get('pending_nav') == 'logout':
