@@ -907,7 +907,7 @@ def main_app():
                                     ou_updated,
                                     ou_ignored,
                                     ou_status,
-                                    '; '.join(ou_message_parts[:5]),
+                                    _join_unique_messages(ou_message_parts, limit=5),
                                     ''
                                 )
 
@@ -915,7 +915,7 @@ def main_app():
                             f"Posting completed. Processed {total_chunks} chunk(s) across {total_ous} school(s)."
                         )
 
-                        message = '; '.join(message_parts[:5])
+                        message = _join_unique_messages(message_parts, limit=5)
                         if status in ('SUCCESS', 'OK'):
                             st.session_state['aggregate_post_feedback'] = {
                                 'level': 'success',
@@ -3280,6 +3280,22 @@ def _iter_chunks(values, chunk_size):
         yield values[idx:idx + size]
 
 
+def _join_unique_messages(messages, limit=5):
+    """Return a semicolon-separated list of unique non-empty messages."""
+    max_items = max(1, int(limit or 1))
+    seen = set()
+    unique = []
+    for raw in (messages or []):
+        msg = str(raw or '').strip()
+        if not msg or msg in seen:
+            continue
+        seen.add(msg)
+        unique.append(msg)
+        if len(unique) >= max_items:
+            break
+    return '; '.join(unique)
+
+
 def _normalize_aggregate_date(value):
     """Normalize aggregate date input to YYYY-MM-DD.
 
@@ -3541,7 +3557,7 @@ def push_to_dhis2():
                     ou_updated,
                     ou_ignored,
                     ou_status,
-                    '; '.join(ou_message_parts[:5]),
+                    _join_unique_messages(ou_message_parts, limit=5),
                     conflicts
                 )
 
@@ -3549,7 +3565,7 @@ def push_to_dhis2():
             f"Push completed. Processed {total_chunks} chunk(s) across {total_ous} school(s)."
         )
 
-        message = '; '.join(message_parts[:5])
+        message = _join_unique_messages(message_parts, limit=5)
         conflicts = '; '.join(all_conflicts[:5])
         if status in ('SUCCESS', 'OK'):
             st.session_state['aggregate_post_feedback'] = {
