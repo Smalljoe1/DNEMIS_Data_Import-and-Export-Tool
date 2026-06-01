@@ -202,7 +202,8 @@ def load_data_values_cached(instance_url, org_unit_uid, period, dataset_uid, use
 @st.cache_data(ttl=300)
 def load_dataset_data_entry_org_units_cached(instance_url, dataset_uid, start_date, end_date,
                                              parent_org_uid, username, password,
-                                             excluded_de_uids=()):
+                                             excluded_de_uids=(),
+                                             scoped_org_uids=()):
     if not dataset_uid or not parent_org_uid:
         return []
     dhis2.set_base_url(instance_url)
@@ -214,12 +215,14 @@ def load_dataset_data_entry_org_units_cached(instance_url, dataset_uid, start_da
         username,
         password,
         excluded_data_elements=list(excluded_de_uids or ()),
+        org_unit_uids=list(scoped_org_uids or ()),
     )))
 
 
 @st.cache_data(ttl=300)
 def load_completed_dataset_org_units_cached(instance_url, dataset_uid, start_date, end_date,
-                                            parent_org_uid, username, password):
+                                            parent_org_uid, username, password,
+                                            scoped_org_uids=()):
     if not dataset_uid or not parent_org_uid:
         return []
     dhis2.set_base_url(instance_url)
@@ -230,6 +233,7 @@ def load_completed_dataset_org_units_cached(instance_url, dataset_uid, start_dat
         parent_org_uid,
         username,
         password,
+        org_unit_uids=list(scoped_org_uids or ()),
     )))
 
 # Main application
@@ -1056,6 +1060,14 @@ def display_dataset_completion_monitor(instance_url):
                 st.session_state.username,
                 st.session_state.password,
             )
+            # Build a fast ancestor -> level5 mapping from Level 5 path values.
+            ancestor_to_level5_ids = {}
+            for ou in level5_ous:
+                ou_uid = str(ou.get('id', '') or '').strip()
+                path_tokens = [x for x in str(ou.get('path', '') or '').split('/') if x]
+                for token in path_tokens:
+                    ancestor_to_level5_ids.setdefault(token, set()).add(ou_uid)
+
             root_level5_map = {
                 str(ou.get('id', '') or ''): {
                     'name': str(ou.get('name', '') or ''),
@@ -1082,19 +1094,11 @@ def display_dataset_completion_monitor(instance_url):
                 if ou_level == 5:
                     dataset_level5_ids.add(ou_uid)
                     continue
-                # Dataset may be assigned at higher levels; expand to Level 5 descendants.
-                descendants = load_descendant_level5_org_units(
-                    instance_url,
-                    ou_uid,
-                    st.session_state.username,
-                    st.session_state.password,
-                )
-                for child in descendants:
-                    child_uid = str(child.get('id', '') or '').strip()
-                    if child_uid:
-                        dataset_level5_ids.add(child_uid)
+                # Dataset may be assigned at higher levels; map via Level 5 path ancestry.
+                dataset_level5_ids.update(ancestor_to_level5_ids.get(ou_uid, set()))
 
             scoped_level5_ids = root_level5_ids.intersection(dataset_level5_ids)
+            scoped_level5_list = sorted(scoped_level5_ids)
             level5_map = {
                 ou_uid: root_level5_map[ou_uid]
                 for ou_uid in scoped_level5_ids
@@ -1111,6 +1115,7 @@ def display_dataset_completion_monitor(instance_url):
                 st.session_state.username,
                 st.session_state.password,
                 tuple(excluded_new_school_code_uids),
+                tuple(scoped_level5_list),
             ))
             completed_ids = set(load_completed_dataset_org_units_cached(
                 instance_url,
@@ -1120,6 +1125,7 @@ def display_dataset_completion_monitor(instance_url):
                 root_org_uid,
                 st.session_state.username,
                 st.session_state.password,
+                tuple(scoped_level5_list),
             ))
 
             entered_level5 = entered_ids.intersection(level5_ids)

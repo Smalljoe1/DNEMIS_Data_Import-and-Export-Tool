@@ -189,7 +189,7 @@ def get_descendant_org_units(root_org_unit_uid: str, username: str, password: st
         password,
         params={
             'paging': 'false',
-            'fields': 'id,name,code,level,parent[id,name,level]',
+            'fields': 'id,name,code,level,path,parent[id,name,level]',
             'filter': path_filter,
         },
         timeout=TIMEOUT_LONG,
@@ -205,6 +205,7 @@ def get_descendant_org_units(root_org_unit_uid: str, username: str, password: st
             'name': str(ou.get('name', '') or ''),
             'code': str(ou.get('code', '') or ''),
             'level': level,
+            'path': str(ou.get('path', '') or ''),
             'parent': ou.get('parent', {}) if isinstance(ou.get('parent', {}), dict) else {},
         })
 
@@ -1638,7 +1639,8 @@ def get_data_values(org_unit_uid: str, period: str, dataset_uid: str,
 def get_dataset_data_entry_org_units(dataset_uid: str, start_date: str, end_date: str,
                                      parent_org_unit_uid: str,
                                      username: str, password: str,
-                                     excluded_data_elements=None) -> set:
+                                     excluded_data_elements=None,
+                                     org_unit_uids=None) -> set:
     """Return orgUnit UIDs that have at least one data value in the dataset/date range.
 
     Uses /api/dataValueSets with children=true under the provided parent org unit.
@@ -1652,46 +1654,81 @@ def get_dataset_data_entry_org_units(dataset_uid: str, start_date: str, end_date
         if str(x or '').strip()
     }
 
-    params = {
-        'dataSet': dataset_uid,
-        'startDate': start_date,
-        'endDate': end_date,
-        'orgUnit': parent_org_unit_uid,
-        'children': 'true',
-        'fields': 'orgUnit,dataElement',
-        'orgUnitIdScheme': 'uid',
-        'dataElementIdScheme': 'uid',
-        'paging': 'false',
-    }
-
-    resp = requests.get(
-        f'{DHIS2_BASE}/dataValueSets',
-        auth=(username, password),
-        params=params,
-        headers=_JSON_HEADERS,
-        timeout=TIMEOUT_LONG,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
     out = set()
-    for dv in data.get('dataValues', []) or []:
-        de_uid = str(dv.get('dataElement', '') or '').strip()
-        if de_uid and de_uid in excluded:
-            continue
-        raw_ou = dv.get('orgUnit', '')
-        if isinstance(raw_ou, dict):
-            ou_uid = str(raw_ou.get('id', '') or raw_ou.get('uid', '') or '').strip()
-        else:
-            ou_uid = str(raw_ou or '').strip()
-        if ou_uid:
-            out.add(ou_uid)
+
+    scoped_org_units = [str(x or '').strip() for x in (org_unit_uids or []) if str(x or '').strip()]
+    if scoped_org_units:
+        for chunk in _chunked(scoped_org_units, chunk_size=75):
+            params = {
+                'dataSet': dataset_uid,
+                'startDate': start_date,
+                'endDate': end_date,
+                'orgUnit': chunk,
+                'children': 'false',
+                'fields': 'orgUnit,dataElement',
+                'orgUnitIdScheme': 'uid',
+                'dataElementIdScheme': 'uid',
+                'paging': 'false',
+            }
+            resp = requests.get(
+                f'{DHIS2_BASE}/dataValueSets',
+                auth=(username, password),
+                params=params,
+                headers=_JSON_HEADERS,
+                timeout=TIMEOUT_LONG,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            for dv in data.get('dataValues', []) or []:
+                de_uid = str(dv.get('dataElement', '') or '').strip()
+                if de_uid and de_uid in excluded:
+                    continue
+                raw_ou = dv.get('orgUnit', '')
+                if isinstance(raw_ou, dict):
+                    ou_uid = str(raw_ou.get('id', '') or raw_ou.get('uid', '') or '').strip()
+                else:
+                    ou_uid = str(raw_ou or '').strip()
+                if ou_uid:
+                    out.add(ou_uid)
+    else:
+        params = {
+            'dataSet': dataset_uid,
+            'startDate': start_date,
+            'endDate': end_date,
+            'orgUnit': parent_org_unit_uid,
+            'children': 'true',
+            'fields': 'orgUnit,dataElement',
+            'orgUnitIdScheme': 'uid',
+            'dataElementIdScheme': 'uid',
+            'paging': 'false',
+        }
+        resp = requests.get(
+            f'{DHIS2_BASE}/dataValueSets',
+            auth=(username, password),
+            params=params,
+            headers=_JSON_HEADERS,
+            timeout=TIMEOUT_LONG,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        for dv in data.get('dataValues', []) or []:
+            de_uid = str(dv.get('dataElement', '') or '').strip()
+            if de_uid and de_uid in excluded:
+                continue
+            raw_ou = dv.get('orgUnit', '')
+            if isinstance(raw_ou, dict):
+                ou_uid = str(raw_ou.get('id', '') or raw_ou.get('uid', '') or '').strip()
+            else:
+                ou_uid = str(raw_ou or '').strip()
+            if ou_uid:
+                out.add(ou_uid)
     return out
 
 
 def get_completed_dataset_org_units(dataset_uid: str, start_date: str, end_date: str,
                                     parent_org_unit_uid: str,
-                                    username: str, password: str) -> set:
+                                    username: str, password: str,
+                                    org_unit_uids=None) -> set:
     """Return orgUnit UIDs with completed dataset registrations in range.
 
     Uses /api/completeDataSetRegistrations with children=true under the parent OU.
@@ -1699,37 +1736,68 @@ def get_completed_dataset_org_units(dataset_uid: str, start_date: str, end_date:
     if not dataset_uid or not parent_org_unit_uid:
         return set()
 
-    params = {
-        'dataSet': dataset_uid,
-        'startDate': start_date,
-        'endDate': end_date,
-        'orgUnit': parent_org_unit_uid,
-        'children': 'true',
-        'orgUnitIdScheme': 'uid',
-        'paging': 'false',
-    }
-
-    resp = requests.get(
-        f'{DHIS2_BASE}/completeDataSetRegistrations',
-        auth=(username, password),
-        params=params,
-        headers=_JSON_HEADERS,
-        timeout=TIMEOUT_LONG,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
     out = set()
-    for reg in data.get('completeDataSetRegistrations', []) or []:
-        raw_ou = reg.get('organisationUnit')
-        if raw_ou is None:
-            raw_ou = reg.get('orgUnit', '')
-        if isinstance(raw_ou, dict):
-            ou_uid = str(raw_ou.get('id', '') or raw_ou.get('uid', '') or '').strip()
-        else:
-            ou_uid = str(raw_ou or '').strip()
-        if ou_uid:
-            out.add(ou_uid)
+
+    scoped_org_units = [str(x or '').strip() for x in (org_unit_uids or []) if str(x or '').strip()]
+    if scoped_org_units:
+        for chunk in _chunked(scoped_org_units, chunk_size=200):
+            params = {
+                'dataSet': dataset_uid,
+                'startDate': start_date,
+                'endDate': end_date,
+                'orgUnit': chunk,
+                'children': 'false',
+                'orgUnitIdScheme': 'uid',
+                'paging': 'false',
+            }
+            resp = requests.get(
+                f'{DHIS2_BASE}/completeDataSetRegistrations',
+                auth=(username, password),
+                params=params,
+                headers=_JSON_HEADERS,
+                timeout=TIMEOUT_LONG,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            for reg in data.get('completeDataSetRegistrations', []) or []:
+                raw_ou = reg.get('organisationUnit')
+                if raw_ou is None:
+                    raw_ou = reg.get('orgUnit', '')
+                if isinstance(raw_ou, dict):
+                    ou_uid = str(raw_ou.get('id', '') or raw_ou.get('uid', '') or '').strip()
+                else:
+                    ou_uid = str(raw_ou or '').strip()
+                if ou_uid:
+                    out.add(ou_uid)
+    else:
+        params = {
+            'dataSet': dataset_uid,
+            'startDate': start_date,
+            'endDate': end_date,
+            'orgUnit': parent_org_unit_uid,
+            'children': 'true',
+            'orgUnitIdScheme': 'uid',
+            'paging': 'false',
+        }
+        resp = requests.get(
+            f'{DHIS2_BASE}/completeDataSetRegistrations',
+            auth=(username, password),
+            params=params,
+            headers=_JSON_HEADERS,
+            timeout=TIMEOUT_LONG,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        for reg in data.get('completeDataSetRegistrations', []) or []:
+            raw_ou = reg.get('organisationUnit')
+            if raw_ou is None:
+                raw_ou = reg.get('orgUnit', '')
+            if isinstance(raw_ou, dict):
+                ou_uid = str(raw_ou.get('id', '') or raw_ou.get('uid', '') or '').strip()
+            else:
+                ou_uid = str(raw_ou or '').strip()
+            if ou_uid:
+                out.add(ou_uid)
     return out
 
 
