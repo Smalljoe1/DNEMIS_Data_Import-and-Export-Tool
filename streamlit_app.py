@@ -201,7 +201,8 @@ def load_data_values_cached(instance_url, org_unit_uid, period, dataset_uid, use
 
 @st.cache_data(ttl=300)
 def load_dataset_data_entry_org_units_cached(instance_url, dataset_uid, start_date, end_date,
-                                             parent_org_uid, username, password):
+                                             parent_org_uid, username, password,
+                                             excluded_de_uids=()):
     if not dataset_uid or not parent_org_uid:
         return []
     dhis2.set_base_url(instance_url)
@@ -212,6 +213,7 @@ def load_dataset_data_entry_org_units_cached(instance_url, dataset_uid, start_da
         parent_org_uid,
         username,
         password,
+        excluded_data_elements=list(excluded_de_uids or ()),
     )))
 
 
@@ -1035,6 +1037,19 @@ def display_dataset_completion_monitor(instance_url):
 
     if st.button("Fetch Completion Status", type="primary", key="fetch_dataset_completion_status"):
         with st.spinner("Fetching Level 5 data entry and completion status..."):
+            dhis2.set_base_url(instance_url)
+            dataset_elements = dhis2.get_dataset_elements(
+                dataset_uid,
+                st.session_state.username,
+                st.session_state.password,
+            )
+            excluded_new_school_code_uids = sorted({
+                str(el.get('deUID', '') or '').strip()
+                for el in (dataset_elements or [])
+                if str(el.get('deUID', '') or '').strip()
+                and 'new school code' in str(el.get('deName', '') or '').lower()
+            })
+
             level5_ous = load_descendant_level5_org_units(
                 instance_url,
                 root_org_uid,
@@ -1095,6 +1110,7 @@ def display_dataset_completion_monitor(instance_url):
                 root_org_uid,
                 st.session_state.username,
                 st.session_state.password,
+                tuple(excluded_new_school_code_uids),
             ))
             completed_ids = set(load_completed_dataset_org_units_cached(
                 instance_url,
@@ -1114,6 +1130,7 @@ def display_dataset_completion_monitor(instance_url):
                 'dataset_uid': dataset_uid,
                 'start_date': start_date,
                 'end_date': end_date,
+                'excluded_new_school_code_uids': excluded_new_school_code_uids,
                 'level5_map': level5_map,
                 'scope_count': len(level5_ids),
                 'entered': sorted(entered_level5),
@@ -1132,9 +1149,15 @@ def display_dataset_completion_monitor(instance_url):
 
     level5_map = results.get('level5_map', {}) or {}
     scope_count = int(results.get('scope_count', 0) or 0)
+    excluded_new_school_code_uids = list(results.get('excluded_new_school_code_uids', []) or [])
     entered = list(results.get('entered', []) or [])
     completed = list(results.get('completed', []) or [])
     pending = list(results.get('pending', []) or [])
+
+    if excluded_new_school_code_uids:
+        st.caption(
+            f"Excluded {len(excluded_new_school_code_uids)} 'New School Code' data element(s) from entered-data detection."
+        )
 
     def _rows_for(ids):
         rows = []

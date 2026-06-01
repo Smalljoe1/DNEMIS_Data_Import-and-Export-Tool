@@ -1637,7 +1637,8 @@ def get_data_values(org_unit_uid: str, period: str, dataset_uid: str,
 
 def get_dataset_data_entry_org_units(dataset_uid: str, start_date: str, end_date: str,
                                      parent_org_unit_uid: str,
-                                     username: str, password: str) -> set:
+                                     username: str, password: str,
+                                     excluded_data_elements=None) -> set:
     """Return orgUnit UIDs that have at least one data value in the dataset/date range.
 
     Uses /api/dataValueSets with children=true under the provided parent org unit.
@@ -1645,14 +1646,21 @@ def get_dataset_data_entry_org_units(dataset_uid: str, start_date: str, end_date
     if not dataset_uid or not parent_org_unit_uid:
         return set()
 
+    excluded = {
+        str(x or '').strip()
+        for x in (excluded_data_elements or [])
+        if str(x or '').strip()
+    }
+
     params = {
         'dataSet': dataset_uid,
         'startDate': start_date,
         'endDate': end_date,
         'orgUnit': parent_org_unit_uid,
         'children': 'true',
-        'fields': 'orgUnit',
+        'fields': 'orgUnit,dataElement',
         'orgUnitIdScheme': 'uid',
+        'dataElementIdScheme': 'uid',
         'paging': 'false',
     }
 
@@ -1668,6 +1676,9 @@ def get_dataset_data_entry_org_units(dataset_uid: str, start_date: str, end_date
 
     out = set()
     for dv in data.get('dataValues', []) or []:
+        de_uid = str(dv.get('dataElement', '') or '').strip()
+        if de_uid and de_uid in excluded:
+            continue
         raw_ou = dv.get('orgUnit', '')
         if isinstance(raw_ou, dict):
             ou_uid = str(raw_ou.get('id', '') or raw_ou.get('uid', '') or '').strip()
