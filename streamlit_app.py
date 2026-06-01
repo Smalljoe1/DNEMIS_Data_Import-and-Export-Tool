@@ -1041,13 +1041,49 @@ def display_dataset_completion_monitor(instance_url):
                 st.session_state.username,
                 st.session_state.password,
             )
-            level5_map = {
+            root_level5_map = {
                 str(ou.get('id', '') or ''): {
                     'name': str(ou.get('name', '') or ''),
                     'code': str(ou.get('code', '') or ''),
                 }
                 for ou in level5_ous
                 if str(ou.get('id', '') or '')
+            }
+            root_level5_ids = set(root_level5_map.keys())
+
+            # Restrict monitor scope to schools assigned to the selected dataset.
+            dataset_ous = load_dataset_org_units(
+                instance_url,
+                dataset_uid,
+                st.session_state.username,
+                st.session_state.password,
+            )
+            dataset_level5_ids = set()
+            for dataset_ou in dataset_ous:
+                ou_uid = str(dataset_ou.get('id', '') or '').strip()
+                ou_level = int(dataset_ou.get('level', 0) or 0)
+                if not ou_uid:
+                    continue
+                if ou_level == 5:
+                    dataset_level5_ids.add(ou_uid)
+                    continue
+                # Dataset may be assigned at higher levels; expand to Level 5 descendants.
+                descendants = load_descendant_level5_org_units(
+                    instance_url,
+                    ou_uid,
+                    st.session_state.username,
+                    st.session_state.password,
+                )
+                for child in descendants:
+                    child_uid = str(child.get('id', '') or '').strip()
+                    if child_uid:
+                        dataset_level5_ids.add(child_uid)
+
+            scoped_level5_ids = root_level5_ids.intersection(dataset_level5_ids)
+            level5_map = {
+                ou_uid: root_level5_map[ou_uid]
+                for ou_uid in scoped_level5_ids
+                if ou_uid in root_level5_map
             }
             level5_ids = set(level5_map.keys())
 
@@ -1079,6 +1115,7 @@ def display_dataset_completion_monitor(instance_url):
                 'start_date': start_date,
                 'end_date': end_date,
                 'level5_map': level5_map,
+                'scope_count': len(level5_ids),
                 'entered': sorted(entered_level5),
                 'completed': sorted(completed_level5),
                 'pending': sorted(pending_completion),
@@ -1094,6 +1131,7 @@ def display_dataset_completion_monitor(instance_url):
         return
 
     level5_map = results.get('level5_map', {}) or {}
+    scope_count = int(results.get('scope_count', 0) or 0)
     entered = list(results.get('entered', []) or [])
     completed = list(results.get('completed', []) or [])
     pending = list(results.get('pending', []) or [])
@@ -1109,7 +1147,8 @@ def display_dataset_completion_monitor(instance_url):
             })
         return rows
 
-    m1, m2, m3 = st.columns(3)
+    m0, m1, m2, m3 = st.columns(4)
+    m0.metric("Dataset-assigned Level 5", scope_count)
     m1.metric("Level 5 with Entered Data", len(entered))
     m2.metric("Completed Dataset", len(completed))
     m3.metric("Entered but Not Completed", len(pending))
