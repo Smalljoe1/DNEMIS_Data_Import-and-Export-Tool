@@ -61,6 +61,7 @@ def init_session_state():
         'event_show_review': False,
         'event_has_unsaved_edits': False,
         'events_editor_rev': 0,
+        'dataset_completion_results': None,
         'aggregate_post_feedback': None,
         'aggregate_import_feedback': None,
         'dhis2_cache_buster': 0
@@ -197,6 +198,38 @@ def load_data_values_cached(instance_url, org_unit_uid, period, dataset_uid, use
         id_scheme=id_scheme,
     )
 
+
+@st.cache_data(ttl=300)
+def load_dataset_data_entry_org_units_cached(instance_url, dataset_uid, start_date, end_date,
+                                             parent_org_uid, username, password):
+    if not dataset_uid or not parent_org_uid:
+        return []
+    dhis2.set_base_url(instance_url)
+    return sorted(list(dhis2.get_dataset_data_entry_org_units(
+        dataset_uid,
+        start_date,
+        end_date,
+        parent_org_uid,
+        username,
+        password,
+    )))
+
+
+@st.cache_data(ttl=300)
+def load_completed_dataset_org_units_cached(instance_url, dataset_uid, start_date, end_date,
+                                            parent_org_uid, username, password):
+    if not dataset_uid or not parent_org_uid:
+        return []
+    dhis2.set_base_url(instance_url)
+    return sorted(list(dhis2.get_completed_dataset_org_units(
+        dataset_uid,
+        start_date,
+        end_date,
+        parent_org_uid,
+        username,
+        password,
+    )))
+
 # Main application
 def main_app():
     instance_url = str(st.session_state.get('instance_url', '') or '')
@@ -218,7 +251,7 @@ def main_app():
         st.subheader("Data Type")
         st.radio(
             "Choose data model",
-            options=["Aggregate Forms", "Events"],
+            options=["Aggregate Forms", "Events", "Dataset Completion Monitor"],
             key="data_mode"
         )
 
@@ -421,6 +454,29 @@ def main_app():
             st.session_state['_last_period'] = str(st.session_state.selected_period)
             st.session_state['_last_org_units'] = list(st.session_state.get('selected_org_units', []))
 
+        elif st.session_state.data_mode == "Dataset Completion Monitor":
+            st.subheader("Select Dataset")
+            datasets = load_datasets(instance_url, st.session_state.username, st.session_state.password)
+            dataset_options = {ds['name']: ds['id'] for ds in datasets}
+            if dataset_options:
+                dataset_names = list(dataset_options.keys())
+                current_uid = str(st.session_state.get('selected_dataset', '') or '')
+                default_index = 0
+                for idx, name in enumerate(dataset_names):
+                    if str(dataset_options.get(name, '') or '') == current_uid:
+                        default_index = idx
+                        break
+                selected_dataset_name = st.selectbox(
+                    "Dataset",
+                    options=dataset_names,
+                    key="completion_dataset_select",
+                    index=default_index,
+                )
+                st.session_state.selected_dataset = dataset_options[selected_dataset_name]
+            else:
+                st.warning("No datasets available for this account.")
+            st.caption("This monitor checks Level 5 schools under your assigned root org unit.")
+
         else:
             if int(st.session_state.get('root_org_unit_level', 0) or 0) < 5:
                 level5_ous = load_descendant_level5_org_units(
@@ -569,7 +625,9 @@ def main_app():
     
     # Main content area
     selected_ous = list(st.session_state.get('selected_org_units', []) or [])
-    if st.session_state.data_mode == "Aggregate Forms" and len(selected_ous) > 1:
+    if st.session_state.data_mode == "Dataset Completion Monitor":
+        st.header("Dataset Completion Monitor")
+    elif st.session_state.data_mode == "Aggregate Forms" and len(selected_ous) > 1:
         st.header(f"Data Entry - {len(selected_ous)} Selected Schools")
     else:
         st.header(f"Data Entry - {st.session_state.school_name}")
@@ -595,6 +653,10 @@ def main_app():
         display_events_interface()
         with st.expander("Sync History"):
             display_sync_logs()
+        return
+
+    if st.session_state.data_mode == "Dataset Completion Monitor":
+        display_dataset_completion_monitor(instance_url)
         return
 
     if not st.session_state.selected_dataset:
@@ -950,6 +1012,124 @@ def main_app():
     # Sync logs section
     with st.expander("Sync History"):
         display_sync_logs()
+
+
+def display_dataset_completion_monitor(instance_url):
+    """Show Level 5 schools with entered data vs completed dataset status."""
+    dataset_uid = str(st.session_state.get('selected_dataset', '') or '')
+    if not dataset_uid:
+        st.info("Please select a dataset from the sidebar to begin.")
+        return
+
+    root_org_uid = str(st.session_state.get('root_org_unit_uid', '') or '')
+    if not root_org_uid:
+        st.error("Root organisation unit is missing for this user.")
+        return
+
+    year = str(st.session_state.get('selected_period', '') or '')
+    start_date = f"{year}-01-01"
+    end_date = f"{year}-12-31"
+
+    st.markdown(f"**Dataset ID:** `{dataset_uid}`")
+    st.caption(f"Monitoring window: {start_date} to {end_date}")
+
+    if st.button("Fetch Completion Status", type="primary", key="fetch_dataset_completion_status"):
+        with st.spinner("Fetching Level 5 data entry and completion status..."):
+            level5_ous = load_descendant_level5_org_units(
+                instance_url,
+                root_org_uid,
+                st.session_state.username,
+                st.session_state.password,
+            )
+            level5_map = {
+                str(ou.get('id', '') or ''): {
+                    'name': str(ou.get('name', '') or ''),
+                    'code': str(ou.get('code', '') or ''),
+                }
+                for ou in level5_ous
+                if str(ou.get('id', '') or '')
+            }
+            level5_ids = set(level5_map.keys())
+
+            entered_ids = set(load_dataset_data_entry_org_units_cached(
+                instance_url,
+                dataset_uid,
+                start_date,
+                end_date,
+                root_org_uid,
+                st.session_state.username,
+                st.session_state.password,
+            ))
+            completed_ids = set(load_completed_dataset_org_units_cached(
+                instance_url,
+                dataset_uid,
+                start_date,
+                end_date,
+                root_org_uid,
+                st.session_state.username,
+                st.session_state.password,
+            ))
+
+            entered_level5 = entered_ids.intersection(level5_ids)
+            completed_level5 = completed_ids.intersection(level5_ids)
+            pending_completion = entered_level5.difference(completed_level5)
+
+            st.session_state['dataset_completion_results'] = {
+                'dataset_uid': dataset_uid,
+                'start_date': start_date,
+                'end_date': end_date,
+                'level5_map': level5_map,
+                'entered': sorted(entered_level5),
+                'completed': sorted(completed_level5),
+                'pending': sorted(pending_completion),
+            }
+
+    results = st.session_state.get('dataset_completion_results')
+    if not isinstance(results, dict):
+        st.info("Click 'Fetch Completion Status' to load results.")
+        return
+
+    if str(results.get('dataset_uid', '') or '') != dataset_uid:
+        st.info("Dataset selection changed. Click 'Fetch Completion Status' to refresh results.")
+        return
+
+    level5_map = results.get('level5_map', {}) or {}
+    entered = list(results.get('entered', []) or [])
+    completed = list(results.get('completed', []) or [])
+    pending = list(results.get('pending', []) or [])
+
+    def _rows_for(ids):
+        rows = []
+        for ou_uid in ids:
+            meta = level5_map.get(ou_uid, {}) or {}
+            rows.append({
+                'Org Unit': meta.get('name', ou_uid),
+                'Code': meta.get('code', ''),
+                'Org Unit UID': ou_uid,
+            })
+        return rows
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Level 5 with Entered Data", len(entered))
+    m2.metric("Completed Dataset", len(completed))
+    m3.metric("Entered but Not Completed", len(pending))
+
+    st.markdown("---")
+    left, right = st.columns(2)
+
+    with left:
+        st.subheader("Entered but Not Completed")
+        if pending:
+            st.dataframe(pd.DataFrame(_rows_for(pending)), use_container_width=True, hide_index=True)
+        else:
+            st.success("No pending schools found for this dataset and period.")
+
+    with right:
+        st.subheader("Completed Dataset")
+        if completed:
+            st.dataframe(pd.DataFrame(_rows_for(completed)), use_container_width=True, hide_index=True)
+        else:
+            st.info("No completed schools found for this dataset and period.")
 
 def load_comparison_data():
     """Load and compare DHIS2 vs local data"""
