@@ -2731,6 +2731,17 @@ def display_events_interface():
                 "to create new staff, enrollment, and first event for this school."
             )
 
+    imported_override_count = len(st.session_state.get('event_template_overrides', {}) or {})
+    imported_create_count = len(st.session_state.get('event_import_create_changes', []) or [])
+    if not st.session_state.get('event_show_review') and (imported_override_count > 0 or imported_create_count > 0):
+        st.caption(
+            f"Imported pending changes: {imported_override_count} updated row(s), "
+            f"{imported_create_count} create item(s)."
+        )
+        if st.button("Review Imported Changes", key="review_imported_event_changes", type="primary"):
+            st.session_state['event_show_review'] = True
+            st.rerun()
+
     st.markdown("---")
     editor_key = f"events_editor_{st.session_state.get('events_editor_rev', 0)}"
     disabled_cols = ['Template Row ID', 'Event ID', 'Org Unit UID', 'Org Unit', 'Person ID']
